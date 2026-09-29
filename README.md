@@ -128,11 +128,12 @@ Google Drive uses OAuth 2.0 and the Google account that owns or can access the N
 | `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` | 32-byte key, encoded as base64 or 64 hexadecimal characters, used to encrypt the saved refresh token |
 | `GOOGLE_DRIVE_ADMIN_KEY` | Backend-only key used to create an expiring HTTP-only administrator session for Drive management |
 | `DATABASE_URL` | PostgreSQL URL for encrypted persistent OAuth-token storage; required for durable storage without a persistent disk |
+| `GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON` | Optional service-account JSON used only to persist the encrypted token in the existing Drive root |
 | `DATABASE_SSL` | Set to `true` when the PostgreSQL provider requires TLS |
 | `GOOGLE_DRIVE_SHARED_DRIVE_ID` | Optional shared-drive ID when the library is in a shared drive |
 | `GOOGLE_DRIVE_TOKEN_FILE` | Optional encrypted token file; defaults to `.data/google-drive-token.enc` for local development only |
 
-The connected account needs permission to read the root folder; creating folders, uploads, and deletes require Editor access. The existing library contains files not necessarily created by this app, so the Drive scope is required for listing and managing those files. PostgreSQL stores an encrypted token payload plus expiry/scope metadata; file fallback uses AES-256-GCM. Keep the encryption key stable. `.data/` is excluded from Git and must not be used as durable production storage.
+The connected account needs permission to read the root folder; creating folders, uploads, and deletes require Editor access. The existing library contains files not necessarily created by this app, so the Drive scope is required for listing and managing those files. PostgreSQL stores an encrypted token payload plus expiry/scope metadata; file fallback uses AES-256-GCM. On Render Free, the service-account vault stores the encrypted token in one reserved non-note file inside the existing root; OAuth remains the Notes Library identity. The service account requires Editor access to that root. Keep the encryption key stable. `.data/` is excluded from Git and must not be used as durable production storage.
 
 ### Other settings
 
@@ -148,7 +149,7 @@ The connected account needs permission to read the root folder; creating folders
 
 - **Browser (`localStorage`):** local learner profiles, active profile, password salt/hash, study progress, test history, question counters, and planner data. This data is tied to the browser profile and origin; it is not synchronized to the server and can be removed by clearing site data. The app's local profiles are for organizing study data, not a server-backed identity or account system.
 - **Google Drive:** uploaded notes and the folder/file library are stored in the configured Drive account. The app accesses them through the backend; it does not keep uploaded notes in its own database.
-- **Backend token storage:** encrypted PostgreSQL record when `DATABASE_URL` is configured; otherwise encrypted `.data/google-drive-token.enc` locally or an explicitly mounted persistent file in production.
+- **Backend token storage:** encrypted PostgreSQL record when `DATABASE_URL` is configured; otherwise encrypted `.data/google-drive-token.enc` locally, an explicitly mounted persistent file in production, or the reserved encrypted token-vault file in the existing Drive root.
 - **Backend memory:** transient AI/provider state only; OAuth state and administrator sessions are signed and do not depend on the Render process memory.
 - **AI providers:** requests are sent from the backend to the configured provider. API keys stay server-side; provider availability, quotas, and billing are controlled by those providers.
 

@@ -378,7 +378,7 @@ function sendGoogleDriveFailure(res, error) {
         MISSING_GOOGLE_OAUTH_CONFIG: [503, 'Google Drive is not configured. Set Google OAuth credentials on the server.'],
         MISSING_DRIVE_TOKEN_ENCRYPTION_KEY: [503, 'Google Drive token encryption is not configured on the server.'],
         MISSING_ROOT_FOLDER: [503, 'Google Drive notes folder is not configured.'],
-        DRIVE_TOKEN_STORAGE_NOT_CONFIGURED: [503, 'Configure a persistent database or token disk before connecting Google Drive in production.'],
+        DRIVE_TOKEN_STORAGE_NOT_CONFIGURED: [503, 'Configure durable Google Drive token storage before connecting.'],
         SUBJECT_FOLDER_NOT_FOUND: [404, 'No subject folder found in the configured Notes Library.'],
         TOPIC_FOLDER_NOT_FOUND: [404, 'No notes folder found for this topic.'],
         GOOGLE_REDIRECT_URI_MISMATCH: [503, 'The Google OAuth redirect URI must match the HTTPS callback registered in Google Cloud.'],

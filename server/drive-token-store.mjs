@@ -1,11 +1,15 @@
 import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { google } from 'googleapis';
 import { Pool } from 'pg';
 
 const TOKEN_PROVIDER = 'google-drive';
+const TOKEN_VAULT_FILE_NAME = '.ts-constable-drive-oauth-token.enc';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 let pool;
 let tableReady;
+let vaultAuth;
 
 function getEncryptionKey() {
     const encodedKey = (process.env.GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY || '').trim();
@@ -24,6 +28,27 @@ function getTokenFilePath() {
     return path.resolve(process.cwd(), process.env.GOOGLE_DRIVE_TOKEN_FILE || '.data/google-drive-token.enc');
 }
 
+function getDriveRootFolderId() {
+    return (process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || process.env.ROOT_FOLDER_ID || '').trim();
+}
+
+function getVaultServiceAccount() {
+    const value = (process.env.GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON || '').trim();
+    if (!value) return null;
+    try {
+        const credentials = JSON.parse(value);
+        return credentials.type === 'service_account' && credentials.client_email && credentials.private_key
+            ? credentials
+            : null;
+    } catch {
+        return null;
+    }
+}
+
+function isDriveVaultConfigured() {
+    return Boolean(getDriveRootFolderId() && getVaultServiceAccount());
+}
+
 export function getGoogleDriveTokenStorageStatus() {
     let encryptionKeyConfigured = true;
     try {
@@ -33,6 +58,9 @@ export function getGoogleDriveTokenStorageStatus() {
     }
     if (process.env.DATABASE_URL?.trim()) {
         return { configured: encryptionKeyConfigured, durable: true, provider: 'postgres', encryptionKeyConfigured };
+    }
+    if (isDriveVaultConfigured()) {
+        return { configured: encryptionKeyConfigured, durable: true, provider: 'google-drive-vault', encryptionKeyConfigured };
     }
     const tokenFilePath = process.env.GOOGLE_DRIVE_TOKEN_FILE?.trim();
     const mountedFile = tokenFilePath?.replace(/\\/g, '/').startsWith('/var/data/');
@@ -98,6 +126,115 @@ async function ensureDatabaseTable() {
     await tableReady;
 }
 
+function getVaultAuth() {
+    if (!vaultAuth) {
+        vaultAuth = new google.auth.GoogleAuth({
+            credentials: getVaultServiceAccount(),
+            scopes: [DRIVE_SCOPE]
+        });
+    }
+    return vaultAuth;
+}
+
+function vaultRequestUrl(url, isList = false) {
+    url.searchParams.set('supportsAllDrives', 'true');
+    if (isList) url.searchParams.set('includeItemsFromAllDrives', 'true');
+    if (isList && process.env.GOOGLE_DRIVE_SHARED_DRIVE_ID?.trim()) {
+        url.searchParams.set('corpora', 'drive');
+        url.searchParams.set('driveId', process.env.GOOGLE_DRIVE_SHARED_DRIVE_ID.trim());
+    }
+    return url;
+}
+
+async function fetchDriveVault(url, options = {}, isList = false) {
+    try {
+        const client = await getVaultAuth().getClient();
+        const credentials = await client.getAccessToken();
+        const accessToken = typeof credentials === 'string' ? credentials : credentials?.token;
+        if (!accessToken) throw new Error('missing access token');
+        const response = await fetch(vaultRequestUrl(url, isList), {
+            ...options,
+            headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` }
+        });
+        if (!response.ok) throw new Error('Drive API request failed');
+        return response;
+    } catch {
+        const error = new Error('The encrypted Drive token vault is unavailable. Verify that its service account can access the configured root folder.');
+        error.code = 'DRIVE_TOKEN_STORAGE_FAILED';
+        throw error;
+    }
+}
+
+async function listVaultFiles() {
+    const rootFolderId = getDriveRootFolderId();
+    if (!rootFolderId) {
+        const error = new Error('The Google Drive Notes Library root is not configured for token storage.');
+        error.code = 'DRIVE_TOKEN_STORAGE_NOT_CONFIGURED';
+        throw error;
+    }
+    const url = new URL('https://www.googleapis.com/drive/v3/files');
+    const escapedName = TOKEN_VAULT_FILE_NAME.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    const escapedRootId = rootFolderId.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    url.searchParams.set('q', `'${escapedRootId}' in parents and name = '${escapedName}' and trashed = false`);
+    url.searchParams.set('pageSize', '10');
+    url.searchParams.set('fields', 'files(id,name,mimeType)');
+    const response = await fetchDriveVault(url, {}, true);
+    const data = await response.json().catch(() => ({}));
+    return Array.isArray(data.files) ? data.files : [];
+}
+
+async function readDriveVaultToken() {
+    const [file] = await listVaultFiles();
+    if (!file) return null;
+    const url = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}`);
+    url.searchParams.set('alt', 'media');
+    const response = await fetchDriveVault(url);
+    return decryptToken(JSON.parse(await response.text()));
+}
+
+async function writeDriveVaultToken(envelope) {
+    const [existingFile] = await listVaultFiles();
+    const serializedEnvelope = JSON.stringify(envelope);
+    if (existingFile) {
+        const url = new URL(`https://www.googleapis.com/upload/drive/v3/files/${encodeURIComponent(existingFile.id)}`);
+        url.searchParams.set('uploadType', 'media');
+        await fetchDriveVault(url, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: serializedEnvelope
+        });
+        return;
+    }
+
+    const boundary = `drive-token-vault-${randomUUID()}`;
+    const metadata = JSON.stringify({
+        name: TOKEN_VAULT_FILE_NAME,
+        mimeType: 'application/octet-stream',
+        parents: [getDriveRootFolderId()],
+        description: 'Encrypted OAuth token storage managed by TS Police AI Prep.'
+    });
+    const body = Buffer.concat([
+        Buffer.from(`--${boundary}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n${metadata}\r\n--${boundary}\r\nContent-Type: application/json\r\n\r\n`),
+        Buffer.from(serializedEnvelope),
+        Buffer.from(`\r\n--${boundary}--`)
+    ]);
+    const url = new URL('https://www.googleapis.com/upload/drive/v3/files');
+    url.searchParams.set('uploadType', 'multipart');
+    url.searchParams.set('fields', 'id');
+    await fetchDriveVault(url, {
+        method: 'POST',
+        headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
+        body
+    });
+}
+
+async function deleteDriveVaultToken() {
+    for (const file of await listVaultFiles()) {
+        const url = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}`);
+        await fetchDriveVault(url, { method: 'DELETE' });
+    }
+}
+
 export async function getStoredGoogleDriveToken() {
     if (process.env.GOOGLE_DRIVE_TOKEN && process.env.NODE_ENV !== 'production') {
         try {
@@ -118,6 +255,7 @@ export async function getStoredGoogleDriveToken() {
             );
             return result.rows[0] ? decryptToken(result.rows[0].token_ciphertext) : null;
         }
+        if (isDriveVaultConfigured()) return await readDriveVaultToken();
 
         const envelope = JSON.parse(await readFile(getTokenFilePath(), 'utf8'));
         return decryptToken(envelope);
@@ -147,6 +285,10 @@ export async function storeGoogleDriveToken(token) {
             `, [TOKEN_PROVIDER, JSON.stringify(envelope), token.expiry || null, token.scope || null, token.token_type || null]);
             return;
         }
+        if (isDriveVaultConfigured()) {
+            await writeDriveVaultToken(envelope);
+            return;
+        }
 
         const tokenFilePath = getTokenFilePath();
         await mkdir(path.dirname(tokenFilePath), { recursive: true });
@@ -165,6 +307,10 @@ export async function clearStoredGoogleDriveToken() {
     if (process.env.DATABASE_URL?.trim()) {
         await ensureDatabaseTable();
         await getPool().query('DELETE FROM google_drive_oauth_tokens WHERE provider = $1', [TOKEN_PROVIDER]);
+        return;
+    }
+    if (isDriveVaultConfigured()) {
+        await deleteDriveVaultToken();
         return;
     }
     try {

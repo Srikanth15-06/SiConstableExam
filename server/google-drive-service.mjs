@@ -94,7 +94,7 @@ function getConfigurationError() {
         return new GoogleDriveError('MISSING_DRIVE_TOKEN_ENCRYPTION_KEY', 'Google Drive token encryption is not configured.');
     }
     if (!config.tokenStorageConfigured) {
-        return new GoogleDriveError('DRIVE_TOKEN_STORAGE_NOT_CONFIGURED', 'Configure DATABASE_URL or a persistent GOOGLE_DRIVE_TOKEN_FILE before connecting Google Drive in production.');
+        return new GoogleDriveError('DRIVE_TOKEN_STORAGE_NOT_CONFIGURED', 'Configure durable token storage with DATABASE_URL, a persistent GOOGLE_DRIVE_TOKEN_FILE, or GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON.');
     }
     if (!config.rootFolderConfigured) {
         return new GoogleDriveError('MISSING_ROOT_FOLDER', 'Google Drive notes folder is not configured.');

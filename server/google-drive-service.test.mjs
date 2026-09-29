@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { google } from 'googleapis';
-import { getGoogleDriveTokenStorageStatus } from './drive-token-store.mjs';
+import { clearStoredGoogleDriveToken, getGoogleDriveTokenStorageStatus, getStoredGoogleDriveToken, storeGoogleDriveToken } from './drive-token-store.mjs';
 
 const driveTestDirectory = await mkdtemp(path.join(os.tmpdir(), 'drive-service-tests-'));
 process.env.GOOGLE_DRIVE_TOKEN_FILE = path.join(driveTestDirectory, 'token.enc');
@@ -124,6 +124,100 @@ test('production token storage rejects the ephemeral default path', () => {
     }
 });
 
+test('production Drive token vault persists only encrypted tokens in the configured root', async () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalDatabaseUrl = process.env.DATABASE_URL;
+    const originalTokenFile = process.env.GOOGLE_DRIVE_TOKEN_FILE;
+    const originalVaultAccount = process.env.GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON;
+    const originalRootFolderId = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
+    const originalFetch = globalThis.fetch;
+    const originalGetClient = google.auth.GoogleAuth.prototype.getClient;
+    process.env.NODE_ENV = 'production';
+    delete process.env.DATABASE_URL;
+    delete process.env.GOOGLE_DRIVE_TOKEN_FILE;
+    process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID = 'vault-root-id';
+    process.env.GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON = JSON.stringify({
+        type: 'service_account',
+        client_email: 'notes-vault@example.test',
+        private_key: 'mock-private-key'
+    });
+
+    let vaultFile;
+    let uploadedBody;
+    let updated = false;
+    let deleted = false;
+    let checkedRootQuery = false;
+    google.auth.GoogleAuth.prototype.getClient = async () => ({
+        getAccessToken: async () => ({ token: 'mock-service-account-access-token' })
+    });
+    globalThis.fetch = async (url, options = {}) => {
+        const driveUrl = new URL(url);
+        assert.equal(options.headers.Authorization, 'Bearer mock-service-account-access-token');
+        if (driveUrl.pathname === '/drive/v3/files') {
+            checkedRootQuery = driveUrl.searchParams.get('q')?.includes("'vault-root-id' in parents") || false;
+            return new Response(JSON.stringify({ files: deleted || !vaultFile ? [] : [{ id: 'vault-file-id', name: '.ts-constable-drive-oauth-token.enc' }] }), { status: 200 });
+        }
+        if (driveUrl.pathname === '/upload/drive/v3/files' && options.method === 'POST') {
+            uploadedBody = Buffer.from(options.body);
+            assert.match(options.headers['Content-Type'], /multipart\/related/);
+            assert.ok(uploadedBody.includes(Buffer.from('vault-root-id')));
+            assert.ok(!uploadedBody.includes(Buffer.from('refresh-secret-test-value')));
+            vaultFile = JSON.parse(uploadedBody.toString().split('application/json\r\n\r\n').at(-1).split('\r\n--')[0]);
+            return new Response(JSON.stringify({ id: 'vault-file-id' }), { status: 200 });
+        }
+        if (driveUrl.pathname === '/upload/drive/v3/files/vault-file-id' && options.method === 'PATCH') {
+            updated = true;
+            vaultFile = JSON.parse(options.body);
+            return new Response('{}', { status: 200 });
+        }
+        if (driveUrl.pathname === '/drive/v3/files/vault-file-id' && options.method === 'DELETE') {
+            deleted = true;
+            vaultFile = null;
+            return new Response(null, { status: 204 });
+        }
+        if (driveUrl.pathname === '/drive/v3/files/vault-file-id' && driveUrl.searchParams.get('alt') === 'media') {
+            return new Response(JSON.stringify(vaultFile), { status: 200 });
+        }
+        throw new Error(`Unexpected vault request ${options.method || 'GET'} ${driveUrl.pathname}`);
+    };
+
+    try {
+        assert.deepEqual(getGoogleDriveTokenStorageStatus(), {
+            configured: true,
+            durable: true,
+            provider: 'google-drive-vault',
+            encryptionKeyConfigured: true
+        });
+        const storedToken = {
+            access_token: 'access-secret-test-value',
+            refresh_token: 'refresh-secret-test-value',
+            expiry: Date.now() + 60_000
+        };
+        await storeGoogleDriveToken(storedToken);
+        assert.equal(checkedRootQuery, true);
+        assert.ok(uploadedBody);
+        assert.deepEqual(await getStoredGoogleDriveToken(), storedToken);
+        await storeGoogleDriveToken({ ...storedToken, expiry: Date.now() + 120_000 });
+        assert.equal(updated, true);
+        await clearStoredGoogleDriveToken();
+        assert.equal(deleted, true);
+        assert.equal(await getStoredGoogleDriveToken(), null);
+    } finally {
+        globalThis.fetch = originalFetch;
+        google.auth.GoogleAuth.prototype.getClient = originalGetClient;
+        if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = originalNodeEnv;
+        if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+        else process.env.DATABASE_URL = originalDatabaseUrl;
+        if (originalTokenFile === undefined) delete process.env.GOOGLE_DRIVE_TOKEN_FILE;
+        else process.env.GOOGLE_DRIVE_TOKEN_FILE = originalTokenFile;
+        if (originalVaultAccount === undefined) delete process.env.GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON;
+        else process.env.GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON = originalVaultAccount;
+        if (originalRootFolderId === undefined) delete process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
+        else process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID = originalRootFolderId;
+    }
+});
+
 test('Drive status preserves OAuth connection state during a temporary Drive API outage', async () => {
     process.env.GOOGLE_CLIENT_ID = 'status-test-client-id';
     process.env.GOOGLE_CLIENT_SECRET = 'status-test-client-secret';
@@ -222,7 +316,11 @@ test('Drive lists direct child folders/files and handles permission and folder e
         }
         const parent = driveUrl.searchParams.get('q')?.match(/'([^']+)' in parents/)?.[1];
         const children = {
-            'test-notes-root': [folderMetadata['english-id'], folderMetadata['arithmetic-id']],
+            'test-notes-root': [
+                folderMetadata['english-id'],
+                folderMetadata['arithmetic-id'],
+                { id: 'drive-token-vault', name: '.ts-constable-drive-oauth-token.enc', mimeType: 'application/octet-stream' }
+            ],
             'english-id': [folderMetadata['sentences-id']],
             'arithmetic-id': [{ id: 'percent-topic', name: 'Percentage', mimeType: 'application/vnd.google-apps.folder' }],
             'sentences-id': [

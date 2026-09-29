@@ -55,11 +55,12 @@ Render provides `PORT`; the server listens on that value. Configure these variab
 | `GOOGLE_DRIVE_SHARED_DRIVE_ID` | Optional; not required for My Drive |
 | `GOOGLE_DRIVE_TOKEN_FILE` | Optional encrypted token file path on a persistent mount |
 | `GOOGLE_DRIVE_TOKEN_FILE_DURABLE` | Set `true` only for a custom path known to be persistent |
+| `GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON` | Optional service-account JSON used only for the encrypted token vault in the existing Drive root |
 
 Keep existing AI provider variables (`GEMINI_API_KEY_n` / `GEMINI_MODEL_n`, `GROQ_API_KEY_n` / `GROQ_MODEL_n`, and `OPENROUTER_API_KEY_n` / `OPENROUTER_MODEL_n`) unchanged. Render's `PORT` is managed by the platform; do not set `VITE_*` secrets.
 
 ## Durable Storage
 
-The project had no database dependency or database URL before this change. The backend now supports PostgreSQL and encrypts the OAuth token payload before writing it to `google_drive_oauth_tokens`. Configure a PostgreSQL service/provider and set `DATABASE_URL` to its private connection URL. PostgreSQL TLS certificate validation stays enabled by default. Alternatively, attach a persistent disk mounted at `/var/data` and set `GOOGLE_DRIVE_TOKEN_FILE=/var/data/google-drive-token.enc`; Render Free does not support persistent disks. The production service refuses to call its default ephemeral `.data/` directory durable.
+The backend supports PostgreSQL and encrypts the OAuth token payload before writing it to `google_drive_oauth_tokens`. Configure a PostgreSQL service/provider and set `DATABASE_URL` to its private connection URL. PostgreSQL TLS certificate validation stays enabled by default. Alternatively, attach a persistent disk mounted at `/var/data` and set `GOOGLE_DRIVE_TOKEN_FILE=/var/data/google-drive-token.enc`; Render Free does not support persistent disks. On Render Free, set `GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON` to use one existing shared service account only for encrypted token storage in the configured root; OAuth remains the Notes Library identity. This adds a reserved encrypted internal file to that root. The production service refuses to call its default ephemeral `.data/` directory durable.
 
 After configuring storage, set the stable encryption key, redeploy, unlock Drive management with `GOOGLE_DRIVE_ADMIN_KEY`, and connect the Google account once. Verify `GET /api/health`, `/api/drive/status`, and `/api/drive/test` through the frontend host.
