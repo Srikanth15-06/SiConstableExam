@@ -316,6 +316,22 @@ export function getProgressColorClass(value = 0) {
     return 'text-red-300';
 }
 
+export function calculateSubjectCompletion(subject, topics = [], userProgress = {}, testHistory = []) {
+    const normalizedTopics = Array.isArray(topics) ? topics : [];
+    const totalTopics = normalizedTopics.length || 1;
+    const practicedTopics = normalizedTopics.filter((topic) => {
+        const progress = userProgress[topic] || {};
+        const topicAttemptCount = testHistory.filter((attempt) => attempt.subject === subject && attempt.topic === topic).length;
+        return Number(progress.attempts || 0) > 0 || topicAttemptCount > 0;
+    }).length;
+    const coverage = (practicedTopics / totalTopics) * 100;
+    const averageBestScore = normalizedTopics.length
+        ? normalizedTopics.reduce((sum, topic) => sum + Number(userProgress[topic]?.bestScore || 0), 0) / normalizedTopics.length
+        : 0;
+    const mastery = Math.min(100, (averageBestScore / 10) * 100);
+    return clamp(Math.round((coverage * 0.75) + (mastery * 0.25)), 0, 100);
+}
+
 export function getTopicStatus({ accuracy = 0, completion = 0, priority = 'LOW' }) {
     if (priority === 'COMPLETED' || completion >= 100 || accuracy >= 85) return 'Strong';
     if (priority === 'CRITICAL' || accuracy < 45 || completion < 35) return 'Critical';
@@ -362,10 +378,15 @@ export function daysRemainingForExam(examType, today = new Date()) {
 export function buildPlannerSnapshot(member, examType, subjectTopics = {}) {
     const normalizedExam = examType === 'CONSTABLE' ? 'CONSTABLE' : 'SI';
     const history = Array.isArray(member?.testHistory) ? member.testHistory.filter((attempt) => String(attempt.exam || 'SI') === normalizedExam) : [];
+    const hasProgressData = Object.values(member?.userProgress || {}).some((progress) => {
+        if (!progress || typeof progress !== 'object') return false;
+        return Number(progress.attempts || progress.total || progress.questionsAttempted || 0) > 0;
+    });
 
     const metrics = [];
     Object.entries(subjectTopics).forEach(([subject, topics]) => {
         topics.forEach((topic) => {
+            const defaultWeightage = DEFAULT_TOPIC_WEIGHTAGE[normalizedExam]?.[subject]?.[topic] ?? 1;
             const relevantAttempts = history.filter((attempt) => attempt.subject === subject && attempt.topic === topic);
             const attempted = relevantAttempts.reduce((sum, attempt) => sum + Number(attempt.total || attempt.questions?.length || 0), 0);
             const correct = relevantAttempts.reduce((sum, attempt) => sum + Number(attempt.correct || attempt.score || 0), 0);
@@ -408,13 +429,40 @@ export function buildPlannerSnapshot(member, examType, subjectTopics = {}) {
                 recentAccuracy,
                 priority,
                 status,
-                weightage,
+                weightage: defaultWeightage,
                 lastAttempted,
                 recommendedMinutes,
                 revisionSessions: Math.max(0, Math.round((completion / 60) + (accuracy < 70 ? 1 : 0)))
             });
         });
     });
+
+    const emptySummary = {
+        overallProgress: 0,
+        syllabusCompletion: 0,
+        testsAttempted: 0,
+        averageAccuracy: 0,
+        strongTopics: 0,
+        weakTopics: 0,
+        criticalTopics: 0,
+        studyStreak: 1,
+        daysRemaining: daysRemainingForExam(normalizedExam),
+        todaysTasks: 0,
+        upcomingTasks: 0
+    };
+
+    if (!history.length && !hasProgressData) {
+        return {
+            examType: normalizedExam,
+            generatedAt: null,
+            summary: emptySummary,
+            topicMetrics: metrics.sort((a, b) => {
+                const priorityValue = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3, COMPLETED: 4 };
+                return priorityValue[a.priority] - priorityValue[b.priority] || b.weightage - a.weightage;
+            }),
+            schedule: []
+        };
+    }
 
     const totalCompletion = metrics.length ? Math.round(metrics.reduce((sum, item) => sum + item.completion, 0) / metrics.length) : 0;
     const totalTests = history.length;

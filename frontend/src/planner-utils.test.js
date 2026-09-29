@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { calculateTopicPriority, buildPlannerSnapshot, getTopicStatus } from './planner-utils.js';
+import { calculateTopicPriority, buildPlannerSnapshot, daysRemainingForExam, getTopicStatus } from './planner-utils.js';
 
 const subjectTopics = {
     Arithmetic: ['Percentages', 'Average'],
@@ -45,4 +45,33 @@ test('buildPlannerSnapshot keeps candidate data isolated and creates a future au
     assert.ok(snapshot.schedule.every((task) => task.examType === 'SI'));
     assert.ok(snapshot.topicMetrics.some((metric) => metric.topic === 'Percentages'));
     assert.ok(snapshot.topicMetrics.some((metric) => metric.topic === 'Average'));
+});
+
+test('buildPlannerSnapshot keeps topic weightage visible without creating a default schedule when there is no study data', () => {
+    const member = {
+        id: 'member-empty',
+        exam: 'SI',
+        userProgress: {},
+        testHistory: []
+    };
+
+    const snapshot = buildPlannerSnapshot(member, 'SI', subjectTopics);
+    assert.equal(snapshot.examType, 'SI');
+    assert.deepEqual(snapshot.schedule, []);
+    assert.ok(snapshot.topicMetrics.length > 0);
+    assert.ok(snapshot.topicMetrics.some((metric) => metric.topic === 'Percentages' && metric.weightage === 5));
+    assert.ok(snapshot.topicMetrics.some((metric) => metric.topic === 'Average' && metric.weightage === 3));
+    assert.deepEqual(snapshot.summary, {
+        overallProgress: 0,
+        syllabusCompletion: 0,
+        testsAttempted: 0,
+        averageAccuracy: 0,
+        strongTopics: 0,
+        weakTopics: 0,
+        criticalTopics: 0,
+        studyStreak: 1,
+        daysRemaining: daysRemainingForExam('SI'),
+        todaysTasks: 0,
+        upcomingTasks: 0
+    });
 });

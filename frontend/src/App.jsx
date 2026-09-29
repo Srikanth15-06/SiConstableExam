@@ -11,6 +11,7 @@ import { generateQuestions, generateNotes, sendChatMessage, getDriveStatus, getD
 import { calculateTestResult, normalizeAnswer } from './test-results.js';
 import {
   buildPlannerSnapshot,
+  calculateSubjectCompletion,
   getPriorityColorClass,
   getProgressColorClass,
   getStatusColorClass,
@@ -1340,10 +1341,7 @@ export default function App() {
       const accuracy = attempts.length
         ? Math.round(attempts.reduce((total, attempt) => total + (attempt.accuracy || 0), 0) / attempts.length)
         : 0;
-      const averageTopicScore = SUBJECT_TOPICS[subject].length
-        ? SUBJECT_TOPICS[subject].reduce((sum, topic) => sum + (userProgress[topic]?.bestScore || 0), 0) / SUBJECT_TOPICS[subject].length
-        : 0;
-      const completion = Math.min(100, Math.round((accuracy * 0.7) + ((averageTopicScore / 10) * 30)));
+      const completion = calculateSubjectCompletion(subject, SUBJECT_TOPICS[subject], userProgress, testHistory);
       const status = getProgressStatus(completion);
       return {
         subject,
@@ -1811,32 +1809,34 @@ export default function App() {
                     <span className="rounded-full border border-slate-700 bg-slate-900 px-2 py-1 text-[10px] uppercase tracking-[0.2em] text-slate-400">{selectedExam}</span>
                   </div>
                   <div className="overflow-x-auto">
-                    <table className="min-w-full text-left text-xs">
-                      <thead>
-                        <tr className="border-b border-slate-700 text-slate-400">
-                          <th className="pb-2 pr-3 font-semibold">Topic</th>
-                          <th className="pb-2 pr-3 font-semibold">Weightage</th>
-                          <th className="pb-2 pr-3 font-semibold">Accuracy</th>
-                          <th className="pb-2 pr-3 font-semibold">Completion</th>
-                          <th className="pb-2 pr-3 font-semibold">Priority</th>
-                          <th className="pb-2 pr-3 font-semibold">Last Attempt</th>
-                          <th className="pb-2 font-semibold">Recommended</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {(plannerData?.topicMetrics || []).slice(0, 8).map((metric) => (
-                          <tr key={`${metric.subject}-${metric.topic}`} className="border-b border-slate-800 text-slate-300">
-                            <td className="py-3 pr-3"><div className="font-semibold text-white">{metric.topic}</div><div className="text-[10px] text-slate-400">{metric.subject}</div></td>
-                            <td className="py-3 pr-3">{metric.weightage}</td>
-                            <td className="py-3 pr-3"><span className={getProgressColorClass(metric.accuracy)}>{metric.accuracy}%</span></td>
-                            <td className="py-3 pr-3">{metric.completion}%</td>
-                            <td className="py-3 pr-3"><span className={`rounded-full border px-2 py-1 font-bold ${getPriorityColorClass(metric.priority)}`}>{metric.priority}</span></td>
-                            <td className="py-3 pr-3">{metric.lastAttempted || 'Not attempted'}</td>
-                            <td className="py-3">{metric.recommendedMinutes} min</td>
+                    <div className="max-h-[420px] overflow-y-auto rounded-xl border border-slate-700">
+                      <table className="min-w-full text-left text-xs">
+                        <thead className="sticky top-0 z-10 bg-slate-800/95 backdrop-blur-sm">
+                          <tr className="border-b border-slate-700 text-slate-400">
+                            <th className="pb-2 pl-3 pr-3 pt-3 font-semibold">Topic</th>
+                            <th className="pb-2 pr-3 pt-3 font-semibold">Weightage</th>
+                            <th className="pb-2 pr-3 pt-3 font-semibold">Accuracy</th>
+                            <th className="pb-2 pr-3 pt-3 font-semibold">Completion</th>
+                            <th className="pb-2 pr-3 pt-3 font-semibold">Priority</th>
+                            <th className="pb-2 pr-3 pt-3 font-semibold">Last Attempt</th>
+                            <th className="pb-2 pr-3 pt-3 font-semibold">Recommended</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {(plannerData?.topicMetrics || []).map((metric) => (
+                            <tr key={`${metric.subject}-${metric.topic}`} className="border-b border-slate-800 text-slate-300">
+                              <td className="py-3 pl-3 pr-3"><div className="font-semibold text-white">{metric.topic}</div><div className="text-[10px] text-slate-400">{metric.subject}</div></td>
+                              <td className="py-3 pr-3">{metric.weightage}</td>
+                              <td className="py-3 pr-3"><span className={getProgressColorClass(metric.accuracy)}>{metric.accuracy}%</span></td>
+                              <td className="py-3 pr-3">{metric.completion}%</td>
+                              <td className="py-3 pr-3"><span className={`rounded-full border px-2 py-1 font-bold ${getPriorityColorClass(metric.priority)}`}>{metric.priority}</span></td>
+                              <td className="py-3 pr-3">{metric.lastAttempted || 'Not attempted'}</td>
+                              <td className="py-3 pr-3">{metric.recommendedMinutes} min</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 </div>
 
@@ -2798,7 +2798,10 @@ export default function App() {
                   {driveDiagnostics?.message && driveConnectionStatus !== 'connected' && <span className="basis-full text-xs text-slate-400">{driveDiagnostics.message}</span>}
                 </div>
                 {driveDiagnostics && !driveDiagnostics.adminAuthConfigured && (
-                  <p className="mt-3 border-t border-slate-700 pt-3 text-xs text-amber-200">Drive management is disabled because the server administrator key is not configured.</p>
+                  <p className="mt-3 border-t border-slate-700 pt-3 text-xs text-amber-200">Drive management is disabled. Set <code>GOOGLE_DRIVE_ADMIN_KEY</code> in the backend Render service, then redeploy.</p>
+                )}
+                {driveDiagnostics && driveDiagnostics.tokenStorage?.configured === false && (
+                  <p className="mt-3 border-t border-slate-700 pt-3 text-xs text-amber-200">Drive cannot connect until durable token storage is configured on the backend: <code>DATABASE_URL</code>, a persistent <code>GOOGLE_DRIVE_TOKEN_FILE</code>, or <code>GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON</code>.</p>
                 )}
                 {driveDiagnostics?.adminAuthConfigured && !isDriveAdminAuthorized && (
                   <form onSubmit={handleDriveAdminLogin} className="mt-3 flex flex-col gap-2 border-t border-slate-700 pt-3 sm:flex-row sm:items-end">
@@ -2821,7 +2824,10 @@ export default function App() {
                 <details className="mt-3 border-t border-slate-700 pt-3 text-xs text-slate-400">
                   <summary className="cursor-pointer font-semibold text-slate-300">Technical details</summary>
                   <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-slate-950 p-3 text-[11px]">{JSON.stringify({
+                    message: driveDiagnostics?.message || null,
                     code: driveDiagnostics?.code || null,
+                    configured: driveDiagnostics?.configured ?? null,
+                    adminAuthConfigured: driveDiagnostics?.adminAuthConfigured ?? null,
                     checks: driveDiagnostics?.checks || null,
                     tokenStorage: driveDiagnostics?.tokenStorage || null,
                     diagnostics: driveDiagnostics?.diagnostics || null
