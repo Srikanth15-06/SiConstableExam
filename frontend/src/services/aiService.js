@@ -117,6 +117,8 @@ function getDriveErrorMessage(code, fallback = 'Google Drive notes could not be 
     MISSING_GOOGLE_OAUTH_CONFIG: 'Google Drive OAuth is not configured on the server.',
     MISSING_DRIVE_TOKEN_ENCRYPTION_KEY: 'Google Drive token encryption is not configured on the server.',
     DRIVE_TOKEN_STORAGE_NOT_CONFIGURED: 'Google Drive needs persistent token storage on the server before it can connect.',
+    SUBJECT_FOLDER_NOT_FOUND: 'No subject folder found in the configured Notes Library.',
+    TOPIC_FOLDER_NOT_FOUND: 'No notes folder found for this topic.',
     MISSING_ROOT_FOLDER: 'Google Drive root folder is not configured.',
     DRIVE_PERMISSION_DENIED: 'The connected Google account needs access to this folder; folder creation and uploads require Editor access.',
     DRIVE_QUOTA_EXCEEDED: 'Google Drive storage quota has been reached. Free up space in the Drive account or choose a Drive account with available storage before uploading files.',
@@ -241,6 +243,28 @@ export async function getDriveFolder(folderId) {
   }
 }
 
+export async function getDriveTopicFiles({ exam, subject, topic }) {
+  if (![exam, subject, topic].every((value) => typeof value === 'string' && value.trim())) {
+    throw new AIServiceError('Choose an exam, subject, and topic to view Google Drive notes.', { provider: 'Google Drive', code: 'INVALID_REQUEST' });
+  }
+  const query = new URLSearchParams({ exam, subject, topic });
+  try {
+    const response = await fetch(apiUrl(`/api/drive/files?${query}`));
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.success !== true || !Array.isArray(data.files)) {
+      throw new AIServiceError(data.message || getDriveErrorMessage(data.code), {
+        provider: 'Google Drive', code: data.code || 'DRIVE_API_FAILED', requestId: data.requestId, status: response.status
+      });
+    }
+    return data;
+  } catch (error) {
+    if (error instanceof AIServiceError) throw error;
+    throw new AIServiceError(import.meta.env.DEV ? `Network error loading topic notes: ${error.message}` : 'Google Drive notes could not be loaded.', {
+      provider: 'Google Drive', code: 'DRIVE_API_FAILED'
+    });
+  }
+}
+
 export async function provisionDriveFolders(subjects) {
   try {
     const response = await fetch(apiUrl('/api/drive/folders/provision'), {
@@ -266,6 +290,10 @@ export async function uploadDriveFile(folderId, subjectFolderId, file) {
     pdf: 'application/pdf',
     doc: 'application/msword',
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     txt: 'text/plain',
     png: 'image/png',
     jpg: 'image/jpeg',

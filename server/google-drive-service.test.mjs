@@ -27,6 +27,7 @@ const {
     deleteDriveFile,
     exchangeGoogleDriveCode,
     getGoogleDriveStatus,
+    listDriveTopicFiles,
     listDriveFolderContents,
     testGoogleDriveConnection,
     validateGoogleDriveConfig
@@ -243,14 +244,17 @@ test('Drive lists direct child folders/files and handles permission and folder e
         assert.equal(status.rootFolderAccessible, true);
         assert.equal(status.checks.listFiles, true);
         assert.equal(status.rootFolderId, 'test-notes-root');
+        assert.equal(status.rootFolderName, 'Notes');
         const connectionTest = await testGoogleDriveConnection();
         assert.equal(connectionTest.ok, true);
         assert.deepEqual(connectionTest.tests, {
             credentials: true,
+            tokenStorage: true,
             authentication: true,
             driveApi: true,
             rootFolder: true,
-            listFiles: true
+            listFiles: true,
+            rootFolderName: 'Notes'
         });
         driveStatus = 403;
         const inaccessibleStatus = await getGoogleDriveStatus();
@@ -429,13 +433,21 @@ test('Drive file preview exports Google Docs inside the selected topic only', as
         if (requestUrl.pathname.endsWith('/export')) {
             return new Response(Buffer.from('pdf-preview-bytes'), { status: 200, headers: { 'Content-Type': 'application/pdf' } });
         }
+        if (requestUrl.pathname.endsWith('/office-ppt')) {
+            return new Response(Buffer.from('office-ppt-bytes'), { status: 200, headers: { 'Content-Type': 'application/vnd.openxmlformats-officedocument.presentationml.presentation' } });
+        }
         const parent = requestUrl.searchParams.get('q')?.match(/'([^']+)' in parents/)?.[1];
         const children = parent === 'preview-root'
             ? [{ id: 'preview-subject', name: 'English', mimeType: 'application/vnd.google-apps.folder' }]
             : parent === 'preview-subject'
                 ? [{ id: 'preview-topic', name: 'Tenses', mimeType: 'application/vnd.google-apps.folder' }]
                 : parent === 'preview-topic'
-                    ? [{ id: 'google-doc-id', name: 'Tenses Notes', mimeType: 'application/vnd.google-apps.document' }]
+                    ? [
+                        { id: 'google-doc-id', name: 'Tenses Notes', mimeType: 'application/vnd.google-apps.document' },
+                        { id: 'google-sheet-id', name: 'Tenses Formula Sheet', mimeType: 'application/vnd.google-apps.spreadsheet' },
+                        { id: 'google-slide-id', name: 'Tenses Slides', mimeType: 'application/vnd.google-apps.presentation' },
+                        { id: 'office-ppt', name: 'Tenses Slides.pptx', mimeType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation' }
+                    ]
                     : [];
         return new Response(JSON.stringify({ files: children }), { status: 200 });
     };
@@ -447,6 +459,16 @@ test('Drive file preview exports Google Docs inside the selected topic only', as
         assert.equal(preview.content.toString(), 'pdf-preview-bytes');
         const exportRequest = requests.find((url) => url.pathname.endsWith('/export'));
         assert.equal(exportRequest.searchParams.get('mimeType'), 'application/pdf');
+        for (const fileId of ['google-sheet-id', 'google-slide-id']) {
+            const workspacePreview = await getTopicFileContent(fileId, 'preview-topic', 'preview-subject');
+            assert.equal(workspacePreview.mimeType, 'application/pdf');
+            assert.equal(workspacePreview.name.endsWith('.pdf'), true);
+            assert.ok(requests.some((url) => url.pathname.endsWith(`/files/${fileId}/export`) && url.searchParams.get('mimeType') === 'application/pdf'));
+        }
+        const officePreview = await getTopicFileContent('office-ppt', 'preview-topic', 'preview-subject');
+        assert.equal(officePreview.mimeType, 'application/vnd.openxmlformats-officedocument.presentationml.presentation');
+        assert.equal(officePreview.content.toString(), 'office-ppt-bytes');
+        assert.ok(requests.some((url) => url.pathname.endsWith('/files/office-ppt') && url.searchParams.get('alt') === 'media'));
         await assert.rejects(
             getTopicFileContent('outside-file-id', 'preview-topic', 'preview-subject'),
             (error) => error.code === 'DRIVE_FILE_NOT_FOUND'
@@ -562,5 +584,70 @@ test('OAuth exchange persists tokens as encrypted server-side data', async () =>
         await clearGoogleDriveToken();
         delete process.env.GOOGLE_DRIVE_TOKEN_FILE;
         await rm(directory, { recursive: true, force: true });
+    }
+});
+
+test('Drive resolves exact normalized subject and topic folders only under the configured root', async () => {
+    process.env.GOOGLE_CLIENT_ID = 'topic-lookup-client-id';
+    process.env.GOOGLE_CLIENT_SECRET = 'topic-lookup-client-secret';
+    process.env.GOOGLE_REDIRECT_URI = 'http://localhost:8787/api/drive/oauth2callback';
+    process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID = 'topic-lookup-root';
+    process.env.GOOGLE_DRIVE_TOKEN = JSON.stringify({
+        access_token: 'topic-lookup-token',
+        refresh_token: 'topic-lookup-refresh-token',
+        expiry: Date.now() + 60_000_000
+    });
+
+    const originalFetch = globalThis.fetch;
+    const queriedParents = [];
+    globalThis.fetch = async (url) => {
+        const driveUrl = new URL(url);
+        if (driveUrl.pathname.endsWith('/topic-lookup-root')) {
+            return new Response(JSON.stringify({ id: 'topic-lookup-root', name: 'SI_CONSTABLE_NOTES', mimeType: 'application/vnd.google-apps.folder' }), { status: 200 });
+        }
+        const parent = driveUrl.searchParams.get('q')?.match(/'([^']+)' in parents/)?.[1];
+        queriedParents.push(parent);
+        const children = {
+            'topic-lookup-root': [
+                { id: 'subject-match', name: 'General  Studies', mimeType: 'application/vnd.google-apps.folder' },
+                { id: 'subject-sibling', name: 'General Studies Advanced', mimeType: 'application/vnd.google-apps.folder' }
+            ],
+            'subject-match': [
+                { id: 'topic-match', name: ' Percentage    Basics ', mimeType: 'application/vnd.google-apps.folder' },
+                { id: 'topic-sibling', name: 'Percentage Basics Advanced', mimeType: 'application/vnd.google-apps.folder' }
+            ],
+            'topic-match': [
+                { id: 'topic-pdf', name: 'Basics.pdf', mimeType: 'application/pdf', size: '1234', webViewLink: 'https://drive.google.test/topic-pdf' },
+                { id: 'nested-folder', name: 'Nested', mimeType: 'application/vnd.google-apps.folder' },
+                { id: 'unsupported-file', name: 'archive.zip', mimeType: 'application/zip' }
+            ]
+        };
+        return new Response(JSON.stringify({ files: children[parent] || [] }), { status: 200 });
+    };
+
+    try {
+        const result = await listDriveTopicFiles(' general studies ', 'PERCENTAGE BASICS');
+        assert.deepEqual(queriedParents, ['topic-lookup-root', 'subject-match', 'topic-match']);
+        assert.deepEqual(result.rootFolder, { id: 'topic-lookup-root', name: 'SI_CONSTABLE_NOTES' });
+        assert.equal(result.subjectFolder.id, 'subject-match');
+        assert.equal(result.topicFolder.id, 'topic-match');
+        assert.deepEqual(result.files.map(({ id }) => id), ['topic-pdf']);
+        assert.equal(result.files[0].webViewLink, 'https://drive.google.test/topic-pdf');
+
+        await assert.rejects(
+            listDriveTopicFiles('General', 'Percentage Basics'),
+            (error) => error.code === 'SUBJECT_FOLDER_NOT_FOUND'
+        );
+        await assert.rejects(
+            listDriveTopicFiles('General Studies', 'Percentage'),
+            (error) => error.code === 'TOPIC_FOLDER_NOT_FOUND'
+        );
+        await assert.rejects(
+            listDriveTopicFiles('', 'Percentage Basics'),
+            (error) => error.code === 'INVALID_REQUEST'
+        );
+    } finally {
+        globalThis.fetch = originalFetch;
+        delete process.env.GOOGLE_DRIVE_TOKEN;
     }
 });

@@ -10,8 +10,14 @@ let accessTokenRefresh;
 const SUPPORTED_NOTE_TYPES = new Set([
     'application/pdf',
     'application/vnd.google-apps.document',
+    'application/vnd.google-apps.spreadsheet',
+    'application/vnd.google-apps.presentation',
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-powerpoint',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'text/plain',
     'image/png',
     'image/jpeg',
@@ -24,15 +30,24 @@ const UPLOAD_MIME_BY_EXTENSION = Object.freeze({
     pdf: 'application/pdf',
     doc: 'application/msword',
     docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    ppt: 'application/vnd.ms-powerpoint',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    xls: 'application/vnd.ms-excel',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     txt: 'text/plain',
     png: 'image/png',
     jpg: 'image/jpeg',
     jpeg: 'image/jpeg',
     webp: 'image/webp'
 });
+const GOOGLE_WORKSPACE_EXPORT_TYPES = new Map([
+    ['application/vnd.google-apps.document', 'application/pdf'],
+    ['application/vnd.google-apps.spreadsheet', 'application/pdf'],
+    ['application/vnd.google-apps.presentation', 'application/pdf']
+]);
 
 const getRootFolderId = () => (process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || process.env.ROOT_FOLDER_ID || '').trim();
-const normalizeFolderName = (name) => String(name || '').normalize('NFKC').trim().toLocaleLowerCase();
+const normalizeFolderName = (name) => String(name || '').normalize('NFKC').trim().replace(/\s+/gu, ' ').toLocaleLowerCase();
 
 export function getGoogleDriveRootFolderId() {
     return getRootFolderId();
@@ -374,10 +389,12 @@ export async function testGoogleDriveConnection() {
         ...status,
         tests: {
             credentials: status.checks.credentials,
+            tokenStorage: status.checks.tokenStorage,
             authentication: status.checks.authentication,
             driveApi: status.checks.driveApi,
             rootFolder: status.checks.rootFolder,
-            listFiles: status.checks.listFiles
+            listFiles: status.checks.listFiles,
+            rootFolderName: status.rootFolderName
         }
     };
 }
@@ -406,6 +423,7 @@ export async function getGoogleDriveStatus() {
         rootFolderConfigured: config.rootFolderConfigured,
         rootFolderAccessible: false,
         rootFolderId: rootFolderId || null,
+        rootFolderName: null,
         tokenStorage: {
             configured: config.tokenStorageConfigured,
             durable: config.tokenStorageDurable,
@@ -439,6 +457,7 @@ export async function getGoogleDriveStatus() {
         const root = await getRootFolderMetadata(accessToken);
         checks.rootFolder = true;
         checks.folderAccess = true;
+        status.rootFolderName = root.name;
         status.authenticated = true;
         status.connected = true;
         status.rootFolderAccessible = true;
@@ -490,6 +509,41 @@ async function listChildren(parentId, accessToken) {
         pageToken = data.nextPageToken;
     } while (pageToken);
     return files;
+}
+
+export async function listDriveTopicFiles(subjectName, topicName) {
+    const subject = String(subjectName || '').trim();
+    const topic = String(topicName || '').trim();
+    if (!subject || !topic) throw new GoogleDriveError('INVALID_REQUEST', 'Choose a subject and topic to view Google Drive notes.');
+    const configurationError = getConfigurationError();
+    if (configurationError) throw configurationError;
+
+    const accessToken = await getAccessToken();
+    const root = await getRootFolderMetadata(accessToken);
+    const rootChildren = await listChildren(root.id, accessToken);
+    const subjectFolder = rootChildren.find((item) => item.mimeType === DRIVE_FOLDER_MIME_TYPE && normalizeFolderName(item.name) === normalizeFolderName(subject));
+    if (!subjectFolder) {
+        throw new GoogleDriveError('SUBJECT_FOLDER_NOT_FOUND', 'No subject folder found in the configured Notes Library.');
+    }
+
+    const subjectChildren = await listChildren(subjectFolder.id, accessToken);
+    const topicFolder = subjectChildren.find((item) => item.mimeType === DRIVE_FOLDER_MIME_TYPE && normalizeFolderName(item.name) === normalizeFolderName(topic));
+    if (!topicFolder) {
+        throw new GoogleDriveError('TOPIC_FOLDER_NOT_FOUND', 'No notes folder found for this topic.');
+    }
+
+    const files = (await listChildren(topicFolder.id, accessToken))
+        .filter((item) => item.mimeType !== DRIVE_FOLDER_MIME_TYPE && SUPPORTED_NOTE_TYPES.has(item.mimeType))
+        .map(({ id, name, mimeType, size, modifiedTime, webViewLink, webContentLink }) => ({
+            id, name, mimeType, size, modifiedTime, webViewLink, webContentLink
+        }));
+    process.env.GOOGLE_DRIVE_CONNECTED = 'true';
+    return {
+        rootFolder: { id: root.id, name: root.name },
+        subjectFolder: { id: subjectFolder.id, name: subjectFolder.name },
+        topicFolder: { id: topicFolder.id, name: topicFolder.name },
+        files
+    };
 }
 
 async function createFolder(parentId, name, accessToken) {
@@ -654,11 +708,11 @@ export async function getDriveFileContent(fileId, folderId) {
     const file = (await listChildren(folder.id, accessToken)).find((item) => item.id === requestedFileId && SUPPORTED_NOTE_TYPES.has(item.mimeType));
     if (!file) throw new GoogleDriveError('DRIVE_FILE_NOT_FOUND', 'The requested file is not available in this Notes Library folder.');
 
-    const isGoogleDocument = file.mimeType === 'application/vnd.google-apps.document';
-    const url = isGoogleDocument
+    const exportMimeType = GOOGLE_WORKSPACE_EXPORT_TYPES.get(file.mimeType);
+    const url = exportMimeType
         ? new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}/export`)
         : new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}`);
-    if (isGoogleDocument) url.searchParams.set('mimeType', 'application/pdf');
+    if (exportMimeType) url.searchParams.set('mimeType', exportMimeType);
     else url.searchParams.set('alt', 'media');
 
     let response;
@@ -672,10 +726,10 @@ export async function getDriveFileContent(fileId, folderId) {
         const data = await response.json().catch(() => ({}));
         throw classifyDriveResponse(response, data);
     }
-    const mimeType = isGoogleDocument
-        ? 'application/pdf'
+    const mimeType = exportMimeType
+        ? exportMimeType
         : (response.headers.get('content-type') || file.mimeType).split(';')[0].trim();
-    const name = isGoogleDocument && !/\.pdf$/i.test(file.name) ? `${file.name}.pdf` : file.name;
+    const name = exportMimeType && !/\.pdf$/i.test(file.name) ? `${file.name}.pdf` : file.name;
     return { name, mimeType, content: Buffer.from(await response.arrayBuffer()) };
 }
 
@@ -719,11 +773,11 @@ export async function getTopicFileContent(fileId, topicFolderId, subjectFolderId
         throw new GoogleDriveError('DRIVE_FILE_NOT_FOUND', 'The requested file is not available in this topic folder.');
     }
 
-    const isGoogleDocument = file.mimeType === 'application/vnd.google-apps.document';
-    const url = isGoogleDocument
+    const exportMimeType = GOOGLE_WORKSPACE_EXPORT_TYPES.get(file.mimeType);
+    const url = exportMimeType
         ? new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}/export`)
         : new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}`);
-    if (isGoogleDocument) url.searchParams.set('mimeType', 'application/pdf');
+    if (exportMimeType) url.searchParams.set('mimeType', exportMimeType);
     else url.searchParams.set('alt', 'media');
 
     let response;
@@ -738,10 +792,10 @@ export async function getTopicFileContent(fileId, topicFolderId, subjectFolderId
         throw classifyDriveResponse(response, data);
     }
 
-    const mimeType = isGoogleDocument
-        ? 'application/pdf'
+    const mimeType = exportMimeType
+        ? exportMimeType
         : (response.headers.get('content-type') || file.mimeType).split(';')[0].trim();
-    const name = isGoogleDocument && !/\.pdf$/i.test(file.name) ? `${file.name}.pdf` : file.name;
+    const name = exportMimeType && !/\.pdf$/i.test(file.name) ? `${file.name}.pdf` : file.name;
     return { name, mimeType, content: Buffer.from(await response.arrayBuffer()) };
 }
 

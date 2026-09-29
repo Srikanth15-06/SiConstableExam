@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { generateQuestions, generateNotes, generateChatReply, getAiStatus } from './ai-service.mjs';
-import { buildGoogleDriveAuthUrl, clearGoogleDriveToken, deleteDriveFile, exchangeGoogleDriveCode, getDriveFileContent, getGoogleDriveRootFolderId, getGoogleDriveStatus, getTopicFileContent, listDriveFolderContents, provisionSubjectTopicFolders, testGoogleDriveConnection, uploadTopicFile } from './google-drive-service.mjs';
+import { buildGoogleDriveAuthUrl, clearGoogleDriveToken, deleteDriveFile, exchangeGoogleDriveCode, getDriveFileContent, getGoogleDriveRootFolderId, getGoogleDriveStatus, getTopicFileContent, listDriveFolderContents, listDriveTopicFiles, provisionSubjectTopicFolders, testGoogleDriveConnection, uploadTopicFile } from './google-drive-service.mjs';
 import { describeAiFailure, sanitizeApiError } from './provider-manager.mjs';
 
 dotenv.config();
@@ -251,6 +251,32 @@ app.get('/api/drive/folders/:folderId', async (req, res) => {
 
 app.get('/api/drive/files', async (req, res) => {
     try {
+        if (req.query.subject !== undefined || req.query.topic !== undefined || req.query.exam !== undefined) {
+            const exam = String(req.query.exam || '').trim();
+            const subject = String(req.query.subject || '').trim();
+            const topic = String(req.query.topic || '').trim();
+            if (!exam || !subject || !topic) {
+                res.status(400).json({ success: false, ok: false, provider: 'google-drive', code: 'INVALID_REQUEST', message: 'Choose an exam, subject, and topic to view Google Drive notes.' });
+                return;
+            }
+            const contents = await listDriveTopicFiles(subject, topic);
+            res.json({
+                ok: true,
+                success: true,
+                provider: 'google-drive',
+                exam,
+                configured: true,
+                available: true,
+                authenticated: true,
+                connected: true,
+                rootFolderConfigured: true,
+                rootFolderAccessible: true,
+                rootFolderId: contents.rootFolder.id,
+                rootFolderName: contents.rootFolder.name,
+                ...contents
+            });
+            return;
+        }
         const folderId = String(req.query.folderId || getGoogleDriveRootFolderId()).trim();
         const contents = await listDriveFolderContents(folderId);
         res.json({ success: true, provider: 'googleDrive', folder: contents.folder, files: contents.files });
@@ -353,6 +379,8 @@ function sendGoogleDriveFailure(res, error) {
         MISSING_DRIVE_TOKEN_ENCRYPTION_KEY: [503, 'Google Drive token encryption is not configured on the server.'],
         MISSING_ROOT_FOLDER: [503, 'Google Drive notes folder is not configured.'],
         DRIVE_TOKEN_STORAGE_NOT_CONFIGURED: [503, 'Configure a persistent database or token disk before connecting Google Drive in production.'],
+        SUBJECT_FOLDER_NOT_FOUND: [404, 'No subject folder found in the configured Notes Library.'],
+        TOPIC_FOLDER_NOT_FOUND: [404, 'No notes folder found for this topic.'],
         GOOGLE_REDIRECT_URI_MISMATCH: [503, 'The Google OAuth redirect URI must match the HTTPS callback registered in Google Cloud.'],
         GOOGLE_INVALID_CLIENT: [503, 'The configured Google OAuth client ID or secret is invalid.'],
         GOOGLE_UNAUTHORIZED_CLIENT: [503, 'The Google OAuth client is not authorized for this application.'],

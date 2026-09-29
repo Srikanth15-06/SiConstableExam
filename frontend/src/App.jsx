@@ -7,7 +7,7 @@ import {
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell
 } from 'recharts';
-import { generateQuestions, generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, provisionDriveFolders, uploadDriveFile, getDriveAuthUrl, checkDriveConnection, disconnectDrive, deleteDriveFile, getDriveFileContentUrl, loginDriveAdmin, logoutDriveAdmin } from './services/aiService.js';
+import { generateQuestions, generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, provisionDriveFolders, uploadDriveFile, getDriveAuthUrl, checkDriveConnection, disconnectDrive, deleteDriveFile, getDriveFileContentUrl, loginDriveAdmin, logoutDriveAdmin } from './services/aiService.js';
 import { calculateTestResult, normalizeAnswer } from './test-results.js';
 import {
   buildPlannerSnapshot,
@@ -119,7 +119,14 @@ const UPCOMING_EXAMS = [
   { id: 'constable', name: 'TS Constable / PC-equivalent', date: '20 December 2026', weekday: 'Sunday', targetTime: Date.parse('2026-12-20T00:00:00+05:30') }
 ];
 const isDriveBrowserPreviewable = (mimeType) => mimeType === 'application/pdf' || mimeType === 'text/plain' || mimeType.startsWith('image/');
-const fileMimeLabel = (mimeType) => mimeType === 'application/vnd.google-apps.document' ? 'Google document · PDF preview' : mimeType;
+const fileMimeLabel = (mimeType) => mimeType.startsWith('application/vnd.google-apps.') ? 'Google file · PDF preview' : mimeType;
+
+function getDriveRootFolderStatus(diagnostics) {
+  if (diagnostics?.rootFolderAccessible) return diagnostics.rootFolderName || 'Connected';
+  if (!diagnostics?.rootFolderConfigured) return 'Not configured';
+  if (!diagnostics?.authenticated) return diagnostics?.code === 'AUTH_REQUIRED' ? 'Authorization required' : 'Not checked';
+  return 'Unavailable';
+}
 
 const getExamCountdown = (targetTime, now) => {
   const remainingMinutes = Math.max(0, Math.floor((targetTime - now) / 60_000));
@@ -824,6 +831,51 @@ export default function App() {
     }
   };
 
+  const handleViewSelectedDriveNotes = async () => {
+    const requestSequence = ++driveRequestSequenceRef.current;
+    setCurrentView('drive-notes');
+    setIsDriveNotesLoading(true);
+    setDriveNotesError('');
+    setDriveCurrentFolders([]);
+    setDriveCurrentFiles([]);
+    setDriveProvisionMessage('');
+    setDriveUploadMessage('');
+    try {
+      const result = await getDriveTopicFiles({
+        exam: normalizeExamForRequest(selectedExam),
+        subject: selectedSubject,
+        topic: selectedTopic
+      });
+      if (requestSequence !== driveRequestSequenceRef.current) return;
+      setDriveRootFolderId(result.rootFolder.id);
+      setDriveCurrentFolderId(result.topicFolder.id);
+      setDriveCurrentFolders([]);
+      setDriveCurrentFiles(result.files);
+      setDriveBreadcrumbs([
+        { id: result.rootFolder.id, name: result.rootFolder.name },
+        { id: result.subjectFolder.id, name: result.subjectFolder.name },
+        { id: result.topicFolder.id, name: result.topicFolder.name }
+      ]);
+      setDriveCurrentSubject(result.subjectFolder.name);
+      setDriveCurrentTopic(result.topicFolder.name);
+      setIsGoogleDriveConnected(true);
+      setDriveConnectionStatus('connected');
+      setDriveDiagnostics((previous) => ({
+        ...previous,
+        ...result,
+        rootFolderAccessible: true,
+        rootFolderConfigured: true,
+        rootFolderId: result.rootFolder.id,
+        rootFolderName: result.rootFolder.name
+      }));
+    } catch (error) {
+      if (requestSequence !== driveRequestSequenceRef.current) return;
+      setDriveNotesError(error.message || 'Google Drive notes could not be loaded.');
+    } finally {
+      if (requestSequence === driveRequestSequenceRef.current) setIsDriveNotesLoading(false);
+    }
+  };
+
   const handleRefreshDrive = async () => {
     setDriveNotesError('');
     try {
@@ -984,8 +1036,8 @@ export default function App() {
       setDriveNotesError('Files must be 20 MB or smaller.');
       return;
     }
-    if (!/\.(pdf|doc|docx|txt|png|jpe?g|webp)$/i.test(file.name)) {
-      setDriveNotesError('Upload PDF, DOC/DOCX, TXT, PNG, JPG/JPEG, or WebP files only.');
+    if (!/\.(pdf|doc|docx|ppt|pptx|xls|xlsx|txt|png|jpe?g|webp)$/i.test(file.name)) {
+      setDriveNotesError('Upload PDF, DOC/DOCX, PPT/PPTX, XLS/XLSX, TXT, PNG, JPG/JPEG, or WebP files only.');
       return;
     }
     if (driveBreadcrumbs.length !== 3 || !driveCurrentFolderId || !driveBreadcrumbs[1]?.id) {
@@ -2020,7 +2072,16 @@ export default function App() {
                         <h2 className="mt-2 text-3xl font-bold text-white">AI-Generated Preparation Notes</h2>
                         <p className="mt-2 text-sm leading-relaxed text-slate-400">Master this topic from fundamentals to exam level with AI-powered explanations.</p>
                       </div>
-                      <div className="flex flex-wrap gap-2">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void handleViewSelectedDriveNotes()}
+                          disabled={isDriveNotesLoading}
+                          className="inline-flex items-center gap-2 rounded-md border border-teal-500/40 bg-teal-500/10 px-3 py-2 text-xs font-semibold text-teal-200 hover:bg-teal-500/20 disabled:opacity-50"
+                        >
+                          <BookOpen className="h-4 w-4" />
+                          {isDriveNotesLoading ? 'Loading notes...' : 'View Notes'}
+                        </button>
                         {[selectedSubject, selectedTopic, normalizeExamForRequest(selectedExam), currentLearningLevel, 'AI Generated'].filter(Boolean).map((badge) => (
                           <span key={badge} className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${badge === currentLearningLevel ? 'border-teal-500/40 bg-teal-500/10 text-teal-200' : 'border-slate-700 bg-slate-800 text-slate-300'}`}>
                             {badge}
@@ -2732,7 +2793,7 @@ export default function App() {
                       {driveConnectionStatus === 'connected' ? 'Connected' : driveConnectionStatus === 'checking' ? 'Connecting...' : driveConnectionStatus === 'not-connected' ? 'Not Connected' : 'Error'}
                     </span>
                   </div>
-                  <span className="text-slate-400">Root Folder: <span className={driveDiagnostics?.rootFolderAccessible ? 'text-emerald-300' : 'text-slate-300'}>{driveDiagnostics?.rootFolderAccessible ? 'Connected' : driveDiagnostics?.rootFolderConfigured ? 'Unavailable' : 'Not configured'}</span></span>
+                  <span className="text-slate-400">Root Folder: <span className={driveDiagnostics?.rootFolderAccessible ? 'text-emerald-300' : 'text-slate-300'}>{getDriveRootFolderStatus(driveDiagnostics)}</span></span>
                   <span className="text-slate-400">Files: <span className="text-slate-200">{driveCurrentFiles.length}</span></span>
                   {driveDiagnostics?.message && driveConnectionStatus !== 'connected' && <span className="basis-full text-xs text-slate-400">{driveDiagnostics.message}</span>}
                 </div>
@@ -2795,7 +2856,7 @@ export default function App() {
                     <input
                       ref={driveUploadInputRef}
                       type="file"
-                      accept=".pdf,.doc,.docx,.txt,.png,.jpg,.jpeg,.webp"
+                      accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.png,.jpg,.jpeg,.webp"
                       className="hidden"
                       onChange={handleDriveFileSelected}
                     />
@@ -2811,7 +2872,7 @@ export default function App() {
               {driveProvisionMessage && <p role="status" className="text-xs text-teal-200">{driveProvisionMessage}</p>}
               {driveUploadMessage && <p role="status" className="text-xs text-teal-200">{driveUploadMessage}</p>}
 
-              {isDriveNotesLoading && <p className="text-sm text-slate-300">{driveConnectionStatus === 'checking' ? 'Connecting to Google Drive...' : 'Loading Google Drive notes...'}</p>}
+              {isDriveNotesLoading && <p role="status" className="text-sm text-slate-300">Loading notes...</p>}
               {driveNotesError && (
                 <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3">
                   <p className="text-xs text-red-200">{driveNotesError}</p>
@@ -2875,10 +2936,10 @@ export default function App() {
                 </section>
               )}
 
-              {!isDriveNotesLoading && !driveNotesError && driveBreadcrumbs.length >= 3 && !driveCurrentFiles.length && !driveCurrentFolders.length && (
+              {!isDriveNotesLoading && !driveNotesError && driveBreadcrumbs.length >= 3 && !driveCurrentFiles.length && (
                 <div className="rounded-lg border border-dashed border-slate-600 bg-slate-800 p-8 text-center">
                   <BookOpen className="mx-auto mb-3 h-8 w-8 text-slate-500" />
-                  <p className="text-sm text-slate-300">No files available in this topic.</p>
+                  <p className="text-sm text-slate-300">No notes available for this topic yet.</p>
                 </div>
               )}
 
