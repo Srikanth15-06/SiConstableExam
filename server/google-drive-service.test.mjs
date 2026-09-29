@@ -83,6 +83,34 @@ test('Drive status reports missing OAuth configuration without disclosing secret
     });
 });
 
+test('Drive status preserves OAuth connection state during a temporary Drive API outage', async () => {
+    process.env.GOOGLE_CLIENT_ID = 'status-test-client-id';
+    process.env.GOOGLE_CLIENT_SECRET = 'status-test-client-secret';
+    process.env.GOOGLE_REDIRECT_URI = 'http://localhost:8787/api/drive/oauth2callback';
+    process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID = 'status-test-folder';
+    process.env.GOOGLE_DRIVE_TOKEN = JSON.stringify({
+        access_token: 'status-test-access-token',
+        refresh_token: 'status-test-refresh-token',
+        expiry: Date.now() + 60_000_000
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response(JSON.stringify({ error: { message: 'Service unavailable' } }), { status: 503 });
+
+    try {
+        const status = await getGoogleDriveStatus();
+        assert.equal(status.connected, true);
+        assert.equal(status.available, false);
+        assert.equal(status.code, 'DRIVE_API_FAILED');
+    } finally {
+        globalThis.fetch = originalFetch;
+        delete process.env.GOOGLE_DRIVE_TOKEN;
+        process.env.GOOGLE_CLIENT_ID = '';
+        process.env.GOOGLE_CLIENT_SECRET = '';
+        process.env.GOOGLE_REDIRECT_URI = '';
+        process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID = 'configured-folder-id';
+    }
+});
+
 test('Drive folder listing refuses invalid OAuth setup before making an external request', async () => {
     await assert.rejects(
         listDriveFolderContents('configured-folder-id'),

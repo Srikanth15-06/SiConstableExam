@@ -405,6 +405,7 @@ export async function getGoogleDriveStatus() {
             provider: 'googleDrive',
             configured: true,
             available: false,
+            connected: error.code !== 'DRIVE_AUTH_FAILED',
             rootFolderId,
             checks,
             code: error.code || 'DRIVE_API_FAILED',

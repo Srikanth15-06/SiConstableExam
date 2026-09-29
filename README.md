@@ -52,7 +52,7 @@ Set these server-side variables in the Render web service. Keep all key and secr
 - Optional Drive settings: `GOOGLE_DRIVE_SHARED_DRIVE_ID` and `GOOGLE_DRIVE_TOKEN_FILE`.
 - Optional OpenRouter site metadata: `OPENROUTER_SITE_URL`.
 
-Register the exact Drive redirect URI above in Google Cloud OAuth settings. The server can derive the frontend callback destination from Render's `RENDER_EXTERNAL_URL` when `FRONTEND_URL` is omitted. Drive refresh tokens are encrypted in `.data/` by default; Render's ephemeral filesystem does not preserve them across restarts, so reconnect Drive after token loss or use durable storage.
+Register the exact Drive redirect URI above in Google Cloud OAuth settings. The server can derive the frontend callback destination from Render's `RENDER_EXTERNAL_URL` when `FRONTEND_URL` is omitted. Drive refresh tokens are encrypted in `.data/` by default, but Render's filesystem is ephemeral and loses them on restart. To keep Drive connected, attach a persistent disk to the web service with mount path `/var/data` and set `GOOGLE_DRIVE_TOKEN_FILE=/var/data/google-drive-token.enc` in the service environment. After deploying that change, connect Google Drive once to seed the token file. Keep the same `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` across deploys; changing it makes the saved token unreadable. Render disks are single-instance storage, so run one web-service instance when using this file-backed token store.
 
 The current Render dashboard configuration uses the repository root, the build command above, and `node server/index.mjs` as its start command. A `render.yaml` is intentionally not included because it would duplicate the already-managed dashboard service configuration.
 

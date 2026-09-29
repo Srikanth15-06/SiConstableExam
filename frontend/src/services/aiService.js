@@ -139,7 +139,7 @@ export async function getDriveAuthUrl() {
 export async function checkDriveConnection() {
   const response = await fetch(apiUrl('/api/drive/auth/status'));
   const data = await response.json().catch(() => ({}));
-  if (!response.ok || !data.success) {
+  if (!response.ok) {
     return { connected: false, message: data.message || 'Google Drive is not connected.' };
   }
   return { connected: Boolean(data.connected || data.available), message: data.message || null };

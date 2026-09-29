@@ -98,7 +98,7 @@ app.post('/api/drive/logout', async (req, res) => {
 app.get('/api/drive/auth/status', async (_req, res) => {
     try {
         const status = await getGoogleDriveStatus();
-        res.json({ success: true, provider: 'googleDrive', ...status, connected: status.available });
+        res.json({ success: true, provider: 'googleDrive', ...status, connected: status.connected ?? status.available });
     } catch (error) {
         sendGoogleDriveFailure(res, error);
     }
