@@ -146,18 +146,21 @@ test('production Drive token vault persists only encrypted tokens in the configu
     let uploadedBody;
     let updated = false;
     let deleted = false;
-    let checkedRootQuery = false;
+    let checkedVaultLookup = false;
+    let serviceAccountOnlyVault = false;
     google.auth.GoogleAuth.prototype.getClient = async () => ({
         getAccessToken: async () => ({ token: 'mock-service-account-access-token' })
     });
     globalThis.fetch = async (url, options = {}) => {
         const driveUrl = new URL(url);
-        assert.equal(options.headers.Authorization, 'Bearer mock-service-account-access-token');
         if (driveUrl.pathname === '/drive/v3/files') {
-            checkedRootQuery = driveUrl.searchParams.get('q')?.includes("'vault-root-id' in parents") || false;
-            return new Response(JSON.stringify({ files: deleted || !vaultFile ? [] : [{ id: 'vault-file-id', name: '.ts-constable-drive-oauth-token.enc' }] }), { status: 200 });
+            assert.equal(options.headers.Authorization, 'Bearer mock-service-account-access-token');
+            const query = driveUrl.searchParams.get('q') || '';
+            checkedVaultLookup = query.includes("name = '.ts-constable-drive-oauth-token.enc'") && !query.includes('in parents');
+            return new Response(JSON.stringify({ files: deleted || !vaultFile ? [] : [{ id: 'vault-file-id', name: '.ts-constable-drive-oauth-token.enc', mimeType: 'application/octet-stream', parents: ['vault-root-id'] }] }), { status: 200 });
         }
         if (driveUrl.pathname === '/upload/drive/v3/files' && options.method === 'POST') {
+            assert.equal(options.headers.Authorization, 'Bearer access-secret-test-value');
             uploadedBody = Buffer.from(options.body);
             assert.match(options.headers['Content-Type'], /multipart\/related/);
             assert.ok(uploadedBody.includes(Buffer.from('vault-root-id')));
@@ -165,6 +168,13 @@ test('production Drive token vault persists only encrypted tokens in the configu
             vaultFile = JSON.parse(uploadedBody.toString().split('application/json\r\n\r\n').at(-1).split('\r\n--')[0]);
             return new Response(JSON.stringify({ id: 'vault-file-id' }), { status: 200 });
         }
+        if (driveUrl.pathname === '/drive/v3/files/vault-file-id/permissions' && options.method === 'POST') {
+            assert.equal(options.headers.Authorization, 'Bearer access-secret-test-value');
+            const permission = JSON.parse(options.body);
+            serviceAccountOnlyVault = permission.role === 'writer' && permission.emailAddress === 'notes-vault@example.test';
+            return new Response(JSON.stringify({ id: 'vault-file-permission' }), { status: 200 });
+        }
+        assert.equal(options.headers.Authorization, 'Bearer mock-service-account-access-token');
         if (driveUrl.pathname === '/upload/drive/v3/files/vault-file-id' && options.method === 'PATCH') {
             updated = true;
             vaultFile = JSON.parse(options.body);
@@ -194,7 +204,8 @@ test('production Drive token vault persists only encrypted tokens in the configu
             expiry: Date.now() + 60_000
         };
         await storeGoogleDriveToken(storedToken);
-        assert.equal(checkedRootQuery, true);
+        assert.equal(checkedVaultLookup, true);
+        assert.equal(serviceAccountOnlyVault, true);
         assert.ok(uploadedBody);
         assert.deepEqual(await getStoredGoogleDriveToken(), storedToken);
         await storeGoogleDriveToken({ ...storedToken, expiry: Date.now() + 120_000 });

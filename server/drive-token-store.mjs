@@ -146,11 +146,14 @@ function vaultRequestUrl(url, isList = false) {
     return url;
 }
 
-async function fetchDriveVault(url, options = {}, isList = false) {
+async function fetchDriveVault(url, options = {}, isList = false, accessTokenOverride = '') {
     try {
-        const client = await getVaultAuth().getClient();
-        const credentials = await client.getAccessToken();
-        const accessToken = typeof credentials === 'string' ? credentials : credentials?.token;
+        let accessToken = accessTokenOverride;
+        if (!accessToken) {
+            const client = await getVaultAuth().getClient();
+            const credentials = await client.getAccessToken();
+            accessToken = typeof credentials === 'string' ? credentials : credentials?.token;
+        }
         if (!accessToken) throw new Error('missing access token');
         const response = await fetch(vaultRequestUrl(url, isList), {
             ...options,
@@ -174,13 +177,15 @@ async function listVaultFiles() {
     }
     const url = new URL('https://www.googleapis.com/drive/v3/files');
     const escapedName = TOKEN_VAULT_FILE_NAME.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    const escapedRootId = rootFolderId.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
-    url.searchParams.set('q', `'${escapedRootId}' in parents and name = '${escapedName}' and trashed = false`);
+    url.searchParams.set('q', `name = '${escapedName}' and trashed = false`);
+    url.searchParams.set('corpora', 'user');
     url.searchParams.set('pageSize', '10');
-    url.searchParams.set('fields', 'files(id,name,mimeType)');
+    url.searchParams.set('fields', 'files(id,name,mimeType,parents)');
     const response = await fetchDriveVault(url, {}, true);
     const data = await response.json().catch(() => ({}));
-    return Array.isArray(data.files) ? data.files : [];
+    return Array.isArray(data.files)
+        ? data.files.filter((file) => file.name === TOKEN_VAULT_FILE_NAME && file.parents?.includes(rootFolderId))
+        : [];
 }
 
 async function readDriveVaultToken() {
@@ -192,7 +197,7 @@ async function readDriveVaultToken() {
     return decryptToken(JSON.parse(await response.text()));
 }
 
-async function writeDriveVaultToken(envelope) {
+async function writeDriveVaultToken(envelope, oauthAccessToken) {
     const [existingFile] = await listVaultFiles();
     const serializedEnvelope = JSON.stringify(envelope);
     if (existingFile) {
@@ -221,11 +226,31 @@ async function writeDriveVaultToken(envelope) {
     const url = new URL('https://www.googleapis.com/upload/drive/v3/files');
     url.searchParams.set('uploadType', 'multipart');
     url.searchParams.set('fields', 'id');
-    await fetchDriveVault(url, {
+    const initialAccessToken = String(oauthAccessToken || '');
+    const serviceAccount = getVaultServiceAccount();
+    if (!initialAccessToken || !serviceAccount?.client_email) {
+        const error = new Error('A user OAuth access token is required to initialize the encrypted Drive token vault.');
+        error.code = 'DRIVE_TOKEN_STORAGE_FAILED';
+        throw error;
+    }
+    const createResponse = await fetchDriveVault(url, {
         method: 'POST',
         headers: { 'Content-Type': `multipart/related; boundary=${boundary}` },
         body
-    });
+    }, false, initialAccessToken);
+    const createdFile = await createResponse.json().catch(() => ({}));
+    if (!createdFile.id) {
+        const error = new Error('The encrypted Drive token vault could not be initialized.');
+        error.code = 'DRIVE_TOKEN_STORAGE_FAILED';
+        throw error;
+    }
+    const permissionUrl = new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(createdFile.id)}/permissions`);
+    permissionUrl.searchParams.set('sendNotificationEmail', 'false');
+    await fetchDriveVault(permissionUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'user', role: 'writer', emailAddress: serviceAccount.client_email })
+    }, false, initialAccessToken);
 }
 
 async function deleteDriveVaultToken() {
@@ -286,7 +311,7 @@ export async function storeGoogleDriveToken(token) {
             return;
         }
         if (isDriveVaultConfigured()) {
-            await writeDriveVaultToken(envelope);
+            await writeDriveVaultToken(envelope, token.access_token);
             return;
         }
 

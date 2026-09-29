@@ -34,9 +34,9 @@ This application uses OAuth 2.0 for the administrator account that owns or can a
 
 ### Render Free token-vault fallback
 
-Set `GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON` on the backend to the JSON key for an existing service account that has Editor access to the configured root. Keep the JSON private and out of Git and frontend variables. The service account is used only to read/write/delete the encrypted token vault; all Notes Library access continues to use the OAuth authorization for `websriweb@gmail.com`.
+Set `GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON` on the backend to the JSON key for an existing service account. Keep the JSON private and out of Git and frontend variables. During the OAuth callback, the OAuth account creates the vault file in the configured root and grants the service account writer access to that file only. Do not grant the selected service account access to the whole root; remove any folder-level permission for it. All Notes Library access continues to use the OAuth authorization for `websriweb@gmail.com`.
 
-The vault creates one reserved `application/octet-stream` file named `.ts-constable-drive-oauth-token.enc` inside the existing root. The app does not list it as a note. Do not delete or rename it manually; administrator disconnect removes it. This avoids Postgres and a Render disk, but it does modify the existing root contents. If no existing service account has Editor access or an available key, use another durable token store instead.
+The vault creates one reserved `application/octet-stream` file named `.ts-constable-drive-oauth-token.enc` inside the existing root. The app does not list it as a note. Do not delete or rename it manually; administrator disconnect removes it. This avoids Postgres and a Render disk, but it does modify the existing root contents. If no existing service-account key is available, use another durable token store instead.
 
 ## Troubleshooting
 
