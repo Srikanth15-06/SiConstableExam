@@ -1,0 +1,11 @@
+.env
+.env.*
+.data/
+credentials/
+tokens/
+secrets/
+*.enc
+*.key
+*.pem
+node_modules/
+frontend/dist/
