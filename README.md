@@ -7,7 +7,7 @@ A browser-based study and exam-preparation app for Telangana Police SI and Const
 This repository has two separately installed parts:
 
 - `frontend/` is the React 19 application built with Vite. It presents the study experience and calls the backend through `/api` requests.
-- `server/` is a Node.js ES module application built on Express. It exposes the AI and Google Drive APIs, keeps the Google OAuth callback/session, and serves the built frontend in production.
+- `server/` is a Node.js ES module application built on Express. It exposes the AI and Google Drive APIs and handles the Google OAuth callback.
 - The root `package.json` provides commands to run, build, and test both parts. Install dependencies at the root and in `frontend/` because the frontend is not an npm workspace.
 
 ### Main features
@@ -26,35 +26,46 @@ During development, Vite normally runs at `http://localhost:5173`. Its `/api` pr
 The Express server provides these API groups:
 
 - `/api/ai/*` for AI provider status, question generation, notes, and chat.
-- `/api/drive/*` for Google OAuth, Drive status, folder browsing/creation, file uploads, and file content.
+- `/api/drive/auth`, `/api/drive/oauth2callback`, `/api/drive/status`, and `/api/drive/test` for OAuth and diagnostics.
+- `/api/drive/folders`, `/api/drive/upload`, `/api/drive/files`, and `/api/drive/files/:id` for root-scoped Notes Library operations.
+- `/api/drive/admin/session` for administrator sign-in/out; mutating Drive operations require its HTTP-only session.
 - `/api/health` for a basic server health check.
 
-For production, build the frontend and run the Express server. It serves static files from `frontend/dist` and falls back to the frontend entry page for app routes.
+Locally, the Express server can serve the built frontend from `frontend/dist`. In production, Render serves `frontend/` as a static site and rewrites `/api/*` to the separate Express service. The API remains same-origin from the browser; if using a different host, configure `VITE_API_BASE_URL` explicitly and set the backend's allowed frontend origin.
 
 ## Render deployment
 
-The production web service serves both the frontend and API from one origin. Configure Render with the repository root as the Root Directory, `main` as the branch, this build command, and the Node start command:
+Production uses two Render services: a static frontend at `https://siconstableexam-1.onrender.com` and the Node API at `https://siconstableexam.onrender.com`.
 
 ```text
-Build:  npm install && npm --prefix frontend install && npm run build
-Start:  npm run dev:server
+Frontend service:
+  Root Directory: frontend/
+  Build Command: npm install; npm run build
+  Publish Directory: dist
+
+Backend web service:
+  Root Directory: repository root
+  Build Command: npm install && npm --prefix frontend install && npm run build
+  Start Command: node server/index.mjs
 ```
 
-`node server/index.mjs` is equivalent to the start command above. Render supplies `PORT` and `RENDER_EXTERNAL_URL`; do not hard-code a production port. Leave `VITE_API_BASE_URL` unset for the single-origin deployment so the browser requests `/api/...` on the same host. `VITE_API_PROXY_TARGET` is for local Vite development only.
+The static service needs a Render **Rewrite** rule from `/api/*` to `https://siconstableexam.onrender.com/api/*`. This keeps API and OAuth callback requests on the frontend origin. Leave `VITE_API_BASE_URL` unset; `VITE_API_PROXY_TARGET=http://localhost:8787` is for local Vite development only. Render supplies `PORT`; do not hard-code a production port.
 
-Set these server-side variables in the Render web service. Keep all key and secret values in Render's environment settings, never in `VITE_*` variables or committed files:
+Set these variables on the Render backend web service only. Keep all key and secret values out of the static frontend service, `VITE_*` variables, and committed files:
 
 - `NODE_ENV=production`
 - `SESSION_SECRET` (a long random value)
-- `FRONTEND_URL=https://srikanthsiexam.onrender.com`
+- `FRONTEND_URL=https://siconstableexam-1.onrender.com`
+- `GOOGLE_DRIVE_ADMIN_KEY` (a separate random key used to authorize Drive management)
 - Provider key/model pairs for the AI features in use, such as `GEMINI_API_KEY_1` / `GEMINI_MODEL_1`, `GROQ_API_KEY_1` / `GROQ_MODEL_1`, and `OPENROUTER_API_KEY_1` / `OPENROUTER_MODEL_1`. Numbered pairs through `_20` are supported.
-- For Drive: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI=https://srikanthsiexam.onrender.com/api/drive/oauth2callback`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, and `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY`.
-- Optional Drive settings: `GOOGLE_DRIVE_SHARED_DRIVE_ID` and `GOOGLE_DRIVE_TOKEN_FILE`.
+- For Drive: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI=https://siconstableexam-1.onrender.com/api/drive/oauth2callback`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, and `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY`.
+- For durable token storage: `DATABASE_URL` for PostgreSQL, or `GOOGLE_DRIVE_TOKEN_FILE=/var/data/google-drive-token.enc` on a persistent disk. The current Free web instance does not support disks, and the default `.data/` path is not durable in production.
+- Optional Drive settings: `DATABASE_SSL`, `GOOGLE_DRIVE_SHARED_DRIVE_ID`, and `GOOGLE_DRIVE_TOKEN_FILE_DURABLE=true` for a custom persistent mount.
 - Optional OpenRouter site metadata: `OPENROUTER_SITE_URL`.
 
-Register the exact Drive redirect URI above in Google Cloud OAuth settings. The server can derive the frontend callback destination from Render's `RENDER_EXTERNAL_URL` when `FRONTEND_URL` is omitted. Drive refresh tokens are encrypted in `.data/` by default, but Render's filesystem is ephemeral and loses them on restart. To keep Drive connected, attach a persistent disk to the web service with mount path `/var/data` and set `GOOGLE_DRIVE_TOKEN_FILE=/var/data/google-drive-token.enc` in the service environment. After deploying that change, connect Google Drive once to seed the token file. Keep the same `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` across deploys; changing it makes the saved token unreadable. Render disks are single-instance storage, so run one web-service instance when using this file-backed token store.
+The static frontend rewrites `/api/*` to the backend, including the Google callback path. Register the exact frontend callback URI above in Google Cloud. PostgreSQL is the preferred durable token store; encrypted file storage is supported locally or on a persistent disk. This repository currently has no database provisioned, so configure `DATABASE_URL` or a persistent disk before connecting Drive in production. Keep `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` stable; changing it makes saved tokens unreadable.
 
-The current Render dashboard configuration uses the repository root, the build command above, and `node server/index.mjs` as its start command. A `render.yaml` is intentionally not included because it would duplicate the already-managed dashboard service configuration.
+Render dashboard configuration is managed in the dashboard; no duplicate `render.yaml` is included. See [GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md) and [RENDER_ENV.md](RENDER_ENV.md) for setup checklists.
 
 ## Requirements
 
@@ -72,7 +83,7 @@ npm install
 npm install --prefix frontend
 ```
 
-Create a `.env` file in the repository root for backend configuration. Add the provider keys/models and optional Google Drive settings described below. AI features require their corresponding provider to be configured; the frontend and non-AI parts can still be explored without provider keys.
+Create a local `.env` from `.env.example` for backend configuration. Add provider keys/models and optional Google Drive settings described below. AI features require their corresponding provider to be configured; the frontend and non-AI parts can still be explored without provider keys.
 
 Open two terminals in the repository root:
 
@@ -106,7 +117,7 @@ Additional pairs can use suffixes `_2` through `_20`, for example `GEMINI_API_KE
 
 ### Google Drive (optional)
 
-Google Drive integration requires a Google Cloud OAuth client, the Drive API enabled for that project, and a folder the connected Google account can access. Set the OAuth redirect URI in Google Cloud to `http://localhost:8787/api/drive/oauth2callback` for local development.
+Google Drive uses OAuth 2.0 and the Google account that owns or can access the Notes Library. Learner profiles are browser-local, not server-authenticated identities, so Drive is intentionally a global administrator-managed library. Set the local Google OAuth redirect URI to `http://localhost:8787/api/drive/oauth2callback`; use the production callback in [GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md).
 
 | Variable | Purpose |
 | --- | --- |
@@ -115,17 +126,20 @@ Google Drive integration requires a Google Cloud OAuth client, the Drive API ena
 | `GOOGLE_REDIRECT_URI` | Must match the redirect URI configured with Google; use the local URL above for development |
 | `GOOGLE_DRIVE_ROOT_FOLDER_ID` | ID of the Drive folder used as the notes library root |
 | `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` | 32-byte key, encoded as base64 or 64 hexadecimal characters, used to encrypt the saved refresh token |
+| `GOOGLE_DRIVE_ADMIN_KEY` | Backend-only key used to create an expiring HTTP-only administrator session for Drive management |
+| `DATABASE_URL` | PostgreSQL URL for encrypted persistent OAuth-token storage; required for durable storage without a persistent disk |
+| `DATABASE_SSL` | Set to `true` when the PostgreSQL provider requires TLS |
 | `GOOGLE_DRIVE_SHARED_DRIVE_ID` | Optional shared-drive ID when the library is in a shared drive |
-| `GOOGLE_DRIVE_TOKEN_FILE` | Optional token file path; defaults to `.data/google-drive-token.enc` |
+| `GOOGLE_DRIVE_TOKEN_FILE` | Optional encrypted token file; defaults to `.data/google-drive-token.enc` for local development only |
 
-The connected account needs permission to read the root folder; creating folders or uploading files requires Editor access. The server stores the refresh token encrypted on disk. Back up and protect both the token file and its encryption key; losing the key means the saved token cannot be decrypted. `.data/` is excluded from Git.
+The connected account needs permission to read the root folder; creating folders, uploads, and deletes require Editor access. The existing library contains files not necessarily created by this app, so the Drive scope is required for listing and managing those files. PostgreSQL stores an encrypted token payload plus expiry/scope metadata; file fallback uses AES-256-GCM. Keep the encryption key stable. `.data/` is excluded from Git and must not be used as durable production storage.
 
 ### Other settings
 
 | Variable | Purpose |
 | --- | --- |
 | `PORT` or `AI_SERVER_PORT` | Express listen port; defaults to `8787` (`PORT` takes precedence) |
-| `SESSION_SECRET` | Express session signing secret; required when `NODE_ENV=production`. In development, a temporary secret is generated if omitted. |
+| `SESSION_SECRET` | Required in production; signs short-lived OAuth state and administrator sessions. In development, a temporary value is generated if omitted. |
 | `FRONTEND_URL` | Frontend URL used after Google OAuth; defaults to `http://localhost:5173` |
 | `VITE_API_PROXY_TARGET` | Development proxy target for `/api`; defaults to `http://localhost:8787` |
 | `VITE_API_BASE_URL` | Optional API base URL used by the browser client; defaults to same-origin paths |
@@ -134,11 +148,11 @@ The connected account needs permission to read the root folder; creating folders
 
 - **Browser (`localStorage`):** local learner profiles, active profile, password salt/hash, study progress, test history, question counters, and planner data. This data is tied to the browser profile and origin; it is not synchronized to the server and can be removed by clearing site data. The app's local profiles are for organizing study data, not a server-backed identity or account system.
 - **Google Drive:** uploaded notes and the folder/file library are stored in the configured Drive account. The app accesses them through the backend; it does not keep uploaded notes in its own database.
-- **Backend filesystem:** the encrypted Google Drive OAuth token is stored at `.data/google-drive-token.enc` by default. Set `GOOGLE_DRIVE_TOKEN_FILE` to change this location.
-- **Backend memory:** the Express session store and transient AI/provider state are in memory. The default Express session store is suitable for local development, not durable production sessions.
+- **Backend token storage:** encrypted PostgreSQL record when `DATABASE_URL` is configured; otherwise encrypted `.data/google-drive-token.enc` locally or an explicitly mounted persistent file in production.
+- **Backend memory:** transient AI/provider state only; OAuth state and administrator sessions are signed and do not depend on the Render process memory.
 - **AI providers:** requests are sent from the backend to the configured provider. API keys stay server-side; provider availability, quotas, and billing are controlled by those providers.
 
-There is no application database configured in this project. Browser study data, the encrypted Drive token file, and the actual Drive library are separate storage locations.
+No application database is currently configured. Browser study data, encrypted Drive token storage, and the actual Drive library are separate storage locations. PostgreSQL support is used for durable Drive token storage when `DATABASE_URL` is provided; it does not migrate browser-local progress.
 
 ## Build, test, and lint
 

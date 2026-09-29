@@ -1,11 +1,12 @@
-import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
-import path from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { google } from 'googleapis';
+import { clearStoredGoogleDriveToken, getGoogleDriveTokenStorageStatus, getStoredGoogleDriveToken, storeGoogleDriveToken } from './drive-token-store.mjs';
 
 let cachedAccessToken;
 let tokenExpiresAt = 0;
 let storedTokenCache;
 let storedTokenCacheLoaded = false;
+let accessTokenRefresh;
 const SUPPORTED_NOTE_TYPES = new Set([
     'application/pdf',
     'application/vnd.google-apps.document',
@@ -18,9 +19,24 @@ const SUPPORTED_NOTE_TYPES = new Set([
 ]);
 const MAX_UPLOAD_BYTES = 20 * 1024 * 1024;
 const DRIVE_FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder';
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
+const UPLOAD_MIME_BY_EXTENSION = Object.freeze({
+    pdf: 'application/pdf',
+    doc: 'application/msword',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    txt: 'text/plain',
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    webp: 'image/webp'
+});
 
 const getRootFolderId = () => (process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || process.env.ROOT_FOLDER_ID || '').trim();
 const normalizeFolderName = (name) => String(name || '').normalize('NFKC').trim().toLocaleLowerCase();
+
+export function getGoogleDriveRootFolderId() {
+    return getRootFolderId();
+}
 
 export class GoogleDriveError extends Error {
     constructor(code, message, diagnostics = {}) {
@@ -37,22 +53,20 @@ export function validateGoogleDriveConfig() {
     const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
     const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
     const redirectUri = (process.env.GOOGLE_REDIRECT_URI || '').trim();
-    let tokenEncryptionKeyConfigured = false;
-    try {
-        getTokenEncryptionKey();
-        tokenEncryptionKeyConfigured = true;
-    } catch {
-        tokenEncryptionKeyConfigured = false;
-    }
-    const configured = Boolean(clientId && clientSecret && redirectUri && rootFolderId && tokenEncryptionKeyConfigured);
+    const tokenStorage = getGoogleDriveTokenStorageStatus();
+    const configured = Boolean(clientId && clientSecret && redirectUri && rootFolderId && tokenStorage.encryptionKeyConfigured && tokenStorage.configured);
     return {
         configured,
         clientIdConfigured: Boolean(clientId),
         clientSecretConfigured: Boolean(clientSecret),
         redirectUriConfigured: Boolean(redirectUri),
-        tokenEncryptionKeyConfigured,
+        tokenEncryptionKeyConfigured: tokenStorage.encryptionKeyConfigured,
+        tokenStorageConfigured: tokenStorage.configured,
+        tokenStorageDurable: tokenStorage.durable,
+        tokenStorageProvider: tokenStorage.provider,
+        adminAuthConfigured: Boolean(process.env.GOOGLE_DRIVE_ADMIN_KEY?.trim()),
         rootFolderConfigured: Boolean(rootFolderId),
-        connected: Boolean(storedTokenCache?.refresh_token || process.env.GOOGLE_DRIVE_TOKEN)
+        connected: Boolean(storedTokenCache?.refresh_token || (process.env.NODE_ENV !== 'production' && process.env.GOOGLE_DRIVE_TOKEN))
     };
 }
 
@@ -64,41 +78,13 @@ function getConfigurationError() {
     if (!config.tokenEncryptionKeyConfigured) {
         return new GoogleDriveError('MISSING_DRIVE_TOKEN_ENCRYPTION_KEY', 'Google Drive token encryption is not configured.');
     }
+    if (!config.tokenStorageConfigured) {
+        return new GoogleDriveError('DRIVE_TOKEN_STORAGE_NOT_CONFIGURED', 'Configure DATABASE_URL or a persistent GOOGLE_DRIVE_TOKEN_FILE before connecting Google Drive in production.');
+    }
     if (!config.rootFolderConfigured) {
         return new GoogleDriveError('MISSING_ROOT_FOLDER', 'Google Drive notes folder is not configured.');
     }
     return null;
-}
-
-function buildAuthUrl(state) {
-    const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
-    const redirectUri = (process.env.GOOGLE_REDIRECT_URI || '').trim();
-    const params = new URLSearchParams({
-        client_id: clientId,
-        redirect_uri: redirectUri,
-        response_type: 'code',
-        access_type: 'offline',
-        prompt: 'consent',
-        scope: 'https://www.googleapis.com/auth/drive',
-        state,
-        include_granted_scopes: 'true'
-    });
-    return `https://accounts.google.com/o/oauth2/v2/auth?${params.toString()}`;
-}
-
-function getTokenEncryptionKey() {
-    const encodedKey = (process.env.GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY || '').trim();
-    const key = /^[a-f\d]{64}$/i.test(encodedKey)
-        ? Buffer.from(encodedKey, 'hex')
-        : Buffer.from(encodedKey, 'base64');
-    if (key.length !== 32) {
-        throw new GoogleDriveError('MISSING_DRIVE_TOKEN_ENCRYPTION_KEY', 'Set GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY to a 32-byte base64 or 64-character hex key.');
-    }
-    return key;
-}
-
-function getTokenFilePath() {
-    return path.resolve(process.cwd(), process.env.GOOGLE_DRIVE_TOKEN_FILE || '.data/google-drive-token.enc');
 }
 
 function getOAuthClientConfig() {
@@ -108,39 +94,34 @@ function getOAuthClientConfig() {
     if (!clientId || !clientSecret || !redirectUri) {
         throw new GoogleDriveError('MISSING_GOOGLE_OAUTH_CONFIG', 'Google Drive OAuth credentials are not configured.');
     }
+    if (process.env.NODE_ENV === 'production' && /^http:\/\/(localhost|127\.0\.0\.1)(:|\/)/i.test(redirectUri)) {
+        throw new GoogleDriveError('GOOGLE_REDIRECT_URI_MISMATCH', 'Production Google OAuth must use the configured HTTPS Render callback URL.');
+    }
     return { clientId, clientSecret, redirectUri };
 }
 
+function createOAuth2Client() {
+    const { clientId, clientSecret, redirectUri } = getOAuthClientConfig();
+    return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
+}
+
 async function getStoredToken() {
-    if (process.env.GOOGLE_DRIVE_TOKEN) {
+    if (process.env.GOOGLE_DRIVE_TOKEN && process.env.NODE_ENV !== 'production') {
         try {
             return JSON.parse(process.env.GOOGLE_DRIVE_TOKEN);
         } catch {
             throw new GoogleDriveError('DRIVE_TOKEN_STORAGE_FAILED', 'The configured Google Drive token is not valid JSON.');
         }
     }
-    if (storedTokenCacheLoaded) return storedTokenCache;
-    const tokenFilePath = getTokenFilePath();
+    const sharedDatabaseConfigured = Boolean(process.env.DATABASE_URL?.trim());
+    if (!sharedDatabaseConfigured && storedTokenCacheLoaded) return storedTokenCache;
     try {
-        const envelope = JSON.parse(await readFile(tokenFilePath, 'utf8'));
-        const decipher = createDecipheriv('aes-256-gcm', getTokenEncryptionKey(), Buffer.from(envelope.iv, 'base64'));
-        decipher.setAuthTag(Buffer.from(envelope.tag, 'base64'));
-        const decrypted = Buffer.concat([
-            decipher.update(Buffer.from(envelope.data, 'base64')),
-            decipher.final()
-        ]).toString('utf8');
-        storedTokenCache = JSON.parse(decrypted);
-        storedTokenCacheLoaded = true;
-        return storedTokenCache;
+        storedTokenCache = await getStoredGoogleDriveToken();
     } catch (error) {
-        if (error.code === 'ENOENT') {
-            storedTokenCacheLoaded = true;
-            storedTokenCache = null;
-            return null;
-        }
-        if (error instanceof GoogleDriveError) throw error;
-        throw new GoogleDriveError('DRIVE_TOKEN_STORAGE_FAILED', 'The saved Google Drive authorization could not be read. Check the token encryption key and reconnect if needed.');
+        throw new GoogleDriveError(error.code || 'DRIVE_TOKEN_STORAGE_FAILED', error.message || 'The saved Google Drive authorization could not be accessed.');
     }
+    storedTokenCacheLoaded = true;
+    return storedTokenCache;
 }
 
 async function storeToken(token) {
@@ -149,73 +130,73 @@ async function storeToken(token) {
     if (!token || !refreshToken) {
         throw new GoogleDriveError('DRIVE_AUTH_FAILED', 'Google did not return a refresh token. Revoke this app’s Drive access in your Google Account and reconnect.');
     }
+    const expiresIn = Number(token.expires_in || 3600);
     const storedToken = {
-        access_token: token.access_token,
+        ...existingToken,
+        ...token,
         refresh_token: refreshToken,
-        expires_in: token.expires_in,
-        scope: token.scope,
-        token_type: token.token_type,
-        expiry: Date.now() + (Number(token.expires_in || 3600) * 1000)
+        expiry: Number(token.expiry || token.expiry_date || (Date.now() + expiresIn * 1000))
     };
-    const key = getTokenEncryptionKey();
-    const iv = randomBytes(12);
-    const cipher = createCipheriv('aes-256-gcm', key, iv);
-    const encrypted = Buffer.concat([cipher.update(JSON.stringify(storedToken), 'utf8'), cipher.final()]);
-    const tokenFilePath = getTokenFilePath();
-    const directory = path.dirname(tokenFilePath);
-    await mkdir(directory, { recursive: true });
-    const temporaryPath = `${tokenFilePath}.${randomUUID()}.tmp`;
-    await writeFile(temporaryPath, JSON.stringify({
-        iv: iv.toString('base64'),
-        tag: cipher.getAuthTag().toString('base64'),
-        data: encrypted.toString('base64')
-    }), { mode: 0o600 });
-    await rename(temporaryPath, tokenFilePath);
+    try {
+        await storeGoogleDriveToken(storedToken);
+    } catch (error) {
+        throw new GoogleDriveError(error.code || 'DRIVE_TOKEN_STORAGE_FAILED', error.message || 'The Google Drive authorization could not be saved.');
+    }
     storedTokenCache = storedToken;
     storedTokenCacheLoaded = true;
+    return storedToken;
+}
+
+function classifyOAuthError(error, stage) {
+    const oauthCode = String(error?.response?.data?.error || error?.code || 'oauth-error').split(/[\s:]/, 1)[0];
+    const httpStatus = error?.response?.status || error?.status;
+    if ((!error?.response && /^(ECONN|ENOTFOUND|ETIMEDOUT|EAI_AGAIN)/i.test(oauthCode)) || httpStatus >= 500) {
+        return new GoogleDriveError('DRIVE_API_FAILED', 'Google authentication service is temporarily unavailable.', { stage, failure: 'network', httpStatus });
+    }
+    const errors = {
+        invalid_grant: ['DRIVE_AUTH_REVOKED', 'Google Drive authorization expired or was revoked. Reconnect the Google account.'],
+        unauthorized_client: ['GOOGLE_UNAUTHORIZED_CLIENT', 'The Google OAuth client is not authorized for this application.'],
+        invalid_client: ['GOOGLE_INVALID_CLIENT', 'The configured Google OAuth client ID or secret is invalid.'],
+        redirect_uri_mismatch: ['GOOGLE_REDIRECT_URI_MISMATCH', 'The Google OAuth redirect URI does not match the URI configured in Google Cloud.']
+    };
+    const [code, message] = errors[oauthCode] || ['DRIVE_AUTH_FAILED', 'Google Drive authorization failed. Reconnect the Google account.'];
+    return new GoogleDriveError(code, message, { stage, oauthError: oauthCode, httpStatus });
 }
 
 async function refreshAccessToken() {
+    if (accessTokenRefresh) return accessTokenRefresh;
+    accessTokenRefresh = refreshStoredAccessToken();
+    try {
+        return await accessTokenRefresh;
+    } finally {
+        accessTokenRefresh = null;
+    }
+}
+
+async function refreshStoredAccessToken() {
     const token = await getStoredToken();
     if (!token?.refresh_token) {
         throw new GoogleDriveError('DRIVE_AUTH_FAILED', 'Google Drive is not connected. Sign in with Google to authorize access to your Drive notes library.');
     }
-    const { clientId, clientSecret, redirectUri } = getOAuthClientConfig();
+    const oauthClient = createOAuth2Client();
+    oauthClient.setCredentials(token);
     try {
-        const response = await fetch('https://oauth2.googleapis.com/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({
-                client_id: clientId,
-                client_secret: clientSecret,
-                refresh_token: token.refresh_token,
-                grant_type: 'refresh_token',
-                redirect_uri: redirectUri
-            })
-        });
-        const data = await response.json().catch(() => ({}));
-        if (!response.ok || !data.access_token) {
-            throw new GoogleDriveError('DRIVE_AUTH_FAILED', 'Google Drive access token refresh failed. Reconnect the Google account to continue.', {
-                stage: 'oauth-token',
-                failure: data.error || 'token-rejected',
-                httpStatus: response.status
-            });
-        }
+        await oauthClient.refreshAccessToken();
+        const data = oauthClient.credentials;
+        if (!data.access_token) throw new GoogleDriveError('DRIVE_AUTH_FAILED', 'Google Drive access token refresh failed. Reconnect the Google account to continue.');
         const refreshedToken = {
             ...token,
-            access_token: data.access_token,
-            expires_in: data.expires_in || 3600,
-            scope: data.scope || token.scope,
-            token_type: data.token_type || token.token_type || 'Bearer',
-            expiry: Date.now() + (Number(data.expires_in || 3600) * 1000)
+            ...data,
+            refresh_token: data.refresh_token || token.refresh_token,
+            expiry: Number(data.expiry_date || (Date.now() + Number(data.expires_in || 3600) * 1000))
         };
-        await storeToken({ ...data, refresh_token: token.refresh_token });
+        await storeToken(refreshedToken);
         cachedAccessToken = refreshedToken.access_token;
         tokenExpiresAt = refreshedToken.expiry;
         return refreshedToken.access_token;
     } catch (error) {
         if (error instanceof GoogleDriveError) throw error;
-        throw new GoogleDriveError('DRIVE_API_FAILED', 'Google authentication service is temporarily unavailable.', { stage: 'oauth-token', failure: 'network' });
+        throw classifyOAuthError(error, 'oauth-refresh');
     }
 }
 
@@ -225,7 +206,7 @@ async function getAccessToken() {
     if (!token?.refresh_token) {
         throw new GoogleDriveError('DRIVE_AUTH_FAILED', 'Google Drive is not connected. Sign in with Google to authorize access to your Drive notes library.');
     }
-    if ((token.expiry || 0) <= Date.now() + 60_000) {
+    if (!token.access_token || (token.expiry || 0) <= Date.now() + 60_000) {
         return refreshAccessToken();
     }
     cachedAccessToken = token.access_token;
@@ -233,44 +214,59 @@ async function getAccessToken() {
     return cachedAccessToken;
 }
 
+async function fetchDrive(url, options = {}) {
+    let accessToken = await getAccessToken();
+    const request = (token) => fetch(url, {
+        ...options,
+        headers: { ...(options.headers || {}), Authorization: `Bearer ${token}` }
+    });
+    let response = await request(accessToken);
+    if (response.status !== 401) return response;
+
+    cachedAccessToken = undefined;
+    tokenExpiresAt = 0;
+    accessToken = await refreshAccessToken();
+    return request(accessToken);
+}
+
 export async function buildGoogleDriveAuthUrl(state) {
     if (!state) throw new GoogleDriveError('INVALID_REQUEST', 'OAuth state is required.');
     const configurationError = getConfigurationError();
     if (configurationError) throw configurationError;
-    return buildAuthUrl(state);
+    return createOAuth2Client().generateAuthUrl({
+        access_type: 'offline',
+        include_granted_scopes: true,
+        prompt: 'consent',
+        scope: [DRIVE_SCOPE],
+        state
+    });
 }
 
 export async function exchangeGoogleDriveCode(code) {
-    const { clientId, clientSecret, redirectUri } = getOAuthClientConfig();
-    let response;
+    if (!String(code || '').trim()) throw new GoogleDriveError('INVALID_REQUEST', 'Google authorization code is required.');
+    const oauthClient = createOAuth2Client();
+    let tokens;
     try {
-        response = await fetch('https://oauth2.googleapis.com/token', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: new URLSearchParams({
-                code,
-                client_id: clientId,
-                client_secret: clientSecret,
-                redirect_uri: redirectUri,
-                grant_type: 'authorization_code'
-            })
-        });
-    } catch {
-        throw new GoogleDriveError('DRIVE_API_FAILED', 'Google authentication service is temporarily unavailable.', { stage: 'oauth-exchange', failure: 'network' });
+        ({ tokens } = await oauthClient.getToken(String(code).trim()));
+    } catch (error) {
+        throw classifyOAuthError(error, 'oauth-exchange');
     }
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.access_token) {
-        throw new GoogleDriveError('DRIVE_AUTH_FAILED', 'Google Drive authorization failed. Please try connecting again.', {
-            stage: 'oauth-exchange',
-            failure: data.error || 'token-rejected',
-            httpStatus: response.status
-        });
+    if (!tokens?.access_token) {
+        throw new GoogleDriveError('DRIVE_AUTH_FAILED', 'Google did not return an access token. Please connect again.');
     }
-    await storeToken(data);
-    cachedAccessToken = data.access_token;
-    tokenExpiresAt = Date.now() + Number(data.expires_in || 3600) * 1000;
+    const existingToken = await getStoredToken();
+    if (!tokens.refresh_token && !existingToken?.refresh_token) {
+        throw new GoogleDriveError('DRIVE_AUTH_FAILED', 'Google did not return a refresh token. Revoke this app’s Drive access in your Google Account and reconnect.');
+    }
+    const storedToken = await storeToken({
+        ...tokens,
+        refresh_token: tokens.refresh_token || existingToken.refresh_token,
+        expiry: Number(tokens.expiry_date || (Date.now() + Number(tokens.expires_in || 3600) * 1000))
+    });
+    cachedAccessToken = storedToken.access_token;
+    tokenExpiresAt = storedToken.expiry;
     process.env.GOOGLE_DRIVE_CONNECTED = 'true';
-    return { connected: true, expiresIn: Number(data.expires_in || 3600) };
+    return { connected: true, expiresIn: Number(tokens.expires_in || 3600) };
 }
 
 export async function clearGoogleDriveToken() {
@@ -278,12 +274,13 @@ export async function clearGoogleDriveToken() {
     tokenExpiresAt = 0;
     storedTokenCache = null;
     storedTokenCacheLoaded = true;
+    accessTokenRefresh = null;
     delete process.env.GOOGLE_DRIVE_TOKEN;
     process.env.GOOGLE_DRIVE_CONNECTED = 'false';
     try {
-        await unlink(getTokenFilePath());
+        await clearStoredGoogleDriveToken();
     } catch (error) {
-        if (error.code !== 'ENOENT') throw error;
+        throw new GoogleDriveError(error.code || 'DRIVE_TOKEN_STORAGE_FAILED', error.message || 'The saved Google Drive authorization could not be removed.');
     }
 }
 
@@ -300,27 +297,35 @@ function withSharedDriveOptions(url) {
 function classifyDriveResponse(response, data, writeOperation = false) {
     const reasons = (data?.error?.errors || []).map((item) => item.reason || '').join(' ');
     const providerMessage = String(data?.error?.message || '');
-    const failureReason = reasons || providerMessage || `http-${response.status}`;
+    const providerCode = String(data?.error?.status || data?.error?.code || reasons || `http-${response.status}`);
+    if (/accessNotConfigured/i.test(`${providerCode} ${reasons} ${providerMessage}`)) {
+        return new GoogleDriveError('DRIVE_API_NOT_ENABLED', 'Google Drive API is not enabled for the configured Google Cloud project.', { stage: 'drive-api', httpStatus: response.status, providerCode: 'accessNotConfigured' });
+    }
     if (response.status === 401) {
-        return new GoogleDriveError('DRIVE_AUTH_FAILED', 'Google Drive authentication failed. Please reconnect your Google account.', { stage: 'drive-api', httpStatus: 401 });
+        return new GoogleDriveError('DRIVE_AUTH_FAILED', 'Google Drive authentication failed. Please reconnect your Google account.', { stage: 'drive-api', httpStatus: 401, providerCode });
     }
     if (response.status === 404) {
-        return new GoogleDriveError('DRIVE_FOLDER_NOT_FOUND', 'The configured Google Drive notes folder was not found.', { stage: 'drive-api', httpStatus: 404 });
+        return new GoogleDriveError('DRIVE_FOLDER_NOT_FOUND', 'The requested Google Drive item was not found or is not accessible.', { stage: 'drive-api', httpStatus: 404, providerCode: 'notFound' });
     }
-    if (response.status === 403 && /storageQuotaExceeded|storage quota|quota exceeded/i.test(`${reasons} ${providerMessage}`)) {
+    if ((response.status === 403 || response.status === 429) && /rateLimitExceeded|userRateLimitExceeded/i.test(`${providerCode} ${reasons} ${providerMessage}`)) {
+        return new GoogleDriveError('DRIVE_RATE_LIMITED', 'Google Drive is receiving too many requests. Wait briefly and try again.', { stage: 'drive-api', httpStatus: response.status, providerCode });
+    }
+    if (response.status === 403 && /storageQuotaExceeded|storage quota|quota exceeded/i.test(`${providerCode} ${reasons} ${providerMessage}`)) {
         return new GoogleDriveError('DRIVE_QUOTA_EXCEEDED', 'Google Drive storage quota has been reached. Free up space in the Drive account or switch to a Drive account with available storage before uploading files.', {
             stage: 'drive-api',
             httpStatus: 403,
-            failure: 'storageQuotaExceeded'
+            providerCode: 'storageQuotaExceeded'
         });
     }
-    if (response.status === 403 && /permission|access denied|insufficient|forbidden/i.test(`${reasons} ${providerMessage}`)) {
+    if (response.status === 403 && /permission|access denied|insufficient|forbidden/i.test(`${providerCode} ${reasons} ${providerMessage}`)) {
         const message = writeOperation
             ? 'The connected Google account needs Editor access to this Drive folder to create folders or upload files.'
             : 'The connected Google account does not have access to the notes folder.';
-        return new GoogleDriveError('DRIVE_PERMISSION_DENIED', message, { stage: 'drive-api', httpStatus: 403 });
+        return new GoogleDriveError('DRIVE_PERMISSION_DENIED', message, { stage: 'drive-api', httpStatus: 403, providerCode });
     }
-    return new GoogleDriveError('DRIVE_API_FAILED', 'Google Drive API request failed.', { stage: 'drive-api', httpStatus: response.status, failure: failureReason });
+    const code = response.status === 400 ? 'DRIVE_BAD_REQUEST' : 'DRIVE_API_FAILED';
+    const message = response.status === 400 ? 'Google Drive rejected the request. Check the selected file or folder and try again.' : 'Google Drive API request failed.';
+    return new GoogleDriveError(code, message, { stage: 'drive-api', httpStatus: response.status, providerCode });
 }
 
 async function getRootFolderMetadata(accessToken) {
@@ -331,11 +336,12 @@ async function getRootFolderMetadata(accessToken) {
 
 async function getFolderMetadata(folderId, accessToken) {
     const url = withSharedDriveOptions(new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(folderId)}`));
-    url.searchParams.set('fields', 'id,name,mimeType');
+    url.searchParams.set('fields', 'id,name,mimeType,parents');
     let response;
     try {
-        response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-    } catch {
+        response = await fetchDrive(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    } catch (error) {
+        if (error instanceof GoogleDriveError) throw error;
         throw new GoogleDriveError('DRIVE_API_FAILED', 'Google Drive is temporarily unavailable.', { stage: 'drive-folder-metadata', failure: 'network' });
     }
     const data = await response.json().catch(() => ({}));
@@ -346,69 +352,115 @@ async function getFolderMetadata(folderId, accessToken) {
     return data;
 }
 
+async function assertFolderWithinRoot(folderId, accessToken) {
+    const rootFolderId = getRootFolderId();
+    if (!folderId || folderId === rootFolderId) return getRootFolderMetadata(accessToken);
+    const requestedFolder = await getFolderMetadata(folderId, accessToken);
+    let current = requestedFolder;
+    const visited = new Set([current.id]);
+    for (let depth = 0; depth < 10; depth += 1) {
+        if (current.parents?.includes(rootFolderId)) return requestedFolder;
+        const parentId = current.parents?.[0];
+        if (!parentId || visited.has(parentId)) break;
+        visited.add(parentId);
+        current = await getFolderMetadata(parentId, accessToken);
+    }
+    throw new GoogleDriveError('DRIVE_FOLDER_NOT_FOUND', 'The requested folder is outside the configured Notes Library.');
+}
+
 export async function testGoogleDriveConnection() {
-    const configurationError = getConfigurationError();
-    if (configurationError) throw configurationError;
-    const accessToken = await getAccessToken();
-    await getRootFolderMetadata(accessToken);
-    process.env.GOOGLE_DRIVE_CONNECTED = 'true';
-    return { folderAccessible: true };
+    const status = await getGoogleDriveStatus();
+    return {
+        ...status,
+        tests: {
+            credentials: status.checks.credentials,
+            authentication: status.checks.authentication,
+            driveApi: status.checks.driveApi,
+            rootFolder: status.checks.rootFolder,
+            listFiles: status.checks.listFiles
+        }
+    };
 }
 
 export async function getGoogleDriveStatus() {
     const config = validateGoogleDriveConfig();
     const rootFolderId = getRootFolderId();
     const checks = {
+        credentials: config.clientIdConfigured && config.clientSecretConfigured && config.redirectUriConfigured,
+        authentication: false,
         oauth: config.clientIdConfigured && config.clientSecretConfigured && config.redirectUriConfigured,
-        rootFolder: config.rootFolderConfigured,
+        rootFolder: false,
+        listFiles: false,
         driveApi: false,
-        folderAccess: false
+        folderAccess: false,
+        tokenStorage: config.tokenStorageConfigured
+    };
+    const status = {
+        ok: false,
+        success: false,
+        provider: 'google-drive',
+        configured: config.configured,
+        available: false,
+        authenticated: false,
+        connected: false,
+        rootFolderConfigured: config.rootFolderConfigured,
+        rootFolderAccessible: false,
+        rootFolderId: rootFolderId || null,
+        tokenStorage: {
+            configured: config.tokenStorageConfigured,
+            durable: config.tokenStorageDurable,
+            provider: config.tokenStorageProvider
+        },
+        checks
     };
     const configurationError = getConfigurationError();
     if (configurationError) {
         return {
-            success: false,
-            provider: 'googleDrive',
-            configured: false,
-            available: false,
-            rootFolderId: rootFolderId || null,
-            checks,
+            ...status,
+            message: configurationError.message,
             code: configurationError.code
         };
     }
 
-    const hasStoredToken = Boolean((await getStoredToken())?.refresh_token);
-    if (!hasStoredToken) {
-        return {
-            success: false,
-            provider: 'googleDrive',
-            configured: true,
-            available: false,
-            rootFolderId,
-            checks,
-            code: 'DRIVE_AUTH_FAILED',
-            diagnostics: { authRequired: true }
-        };
+    let token;
+    try {
+        token = await getStoredToken();
+    } catch (error) {
+        return { ...status, message: error.message, code: error.code || 'DRIVE_TOKEN_STORAGE_FAILED' };
+    }
+    if (!token?.refresh_token) {
+        return { ...status, message: 'Google Drive authorization is required.', code: 'AUTH_REQUIRED' };
     }
 
     try {
         const accessToken = await getAccessToken();
-        await getRootFolderMetadata(accessToken);
+        checks.authentication = true;
         checks.driveApi = true;
+        const root = await getRootFolderMetadata(accessToken);
+        checks.rootFolder = true;
         checks.folderAccess = true;
+        status.authenticated = true;
+        status.connected = true;
+        status.rootFolderAccessible = true;
+        await listChildren(root.id, accessToken);
+        checks.listFiles = true;
         process.env.GOOGLE_DRIVE_CONNECTED = 'true';
-        return { success: true, provider: 'googleDrive', configured: true, available: true, rootFolderId, checks };
+        return { ...status, ok: true, success: true, available: true, message: 'Google Drive is connected and ready.' };
     } catch (error) {
         if (error.code === 'DRIVE_PERMISSION_DENIED' || error.code === 'DRIVE_FOLDER_NOT_FOUND') checks.driveApi = true;
+        const authFailed = ['DRIVE_AUTH_FAILED', 'DRIVE_AUTH_REVOKED'].includes(error.code);
+        status.authenticated = checks.authentication && !authFailed;
+        status.connected = status.authenticated;
+        status.rootFolderAccessible = checks.rootFolder;
+        const code = error.code === 'DRIVE_PERMISSION_DENIED' || error.code === 'DRIVE_FOLDER_NOT_FOUND'
+            ? 'FOLDER_ACCESS_FAILED'
+            : error.code === 'DRIVE_AUTH_REVOKED' ? 'AUTH_REQUIRED' : (error.code || 'DRIVE_API_FAILED');
         return {
-            success: false,
-            provider: 'googleDrive',
-            configured: true,
-            available: false,
-            connected: error.code !== 'DRIVE_AUTH_FAILED',
-            rootFolderId,
-            checks,
-            code: error.code || 'DRIVE_API_FAILED',
+            ...status,
+            message: code === 'FOLDER_ACCESS_FAILED'
+                ? 'The authorized Google account cannot access the configured Notes Library folder.'
+                : error.message || 'Google Drive is temporarily unavailable.',
+            code,
             diagnostics: error.diagnostics || {}
         };
     }
@@ -427,8 +479,9 @@ async function listChildren(parentId, accessToken) {
 
         let response;
         try {
-            response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-        } catch {
+            response = await fetchDrive(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+        } catch (error) {
+            if (error instanceof GoogleDriveError) throw error;
             throw new GoogleDriveError('DRIVE_API_FAILED', 'Google Drive is temporarily unavailable.');
         }
         const data = await response.json().catch(() => ({}));
@@ -445,12 +498,13 @@ async function createFolder(parentId, name, accessToken) {
     if (process.env.GOOGLE_DRIVE_SHARED_DRIVE_ID?.trim()) url.searchParams.set('supportsAllDrives', 'true');
     let response;
     try {
-        response = await fetch(url, {
+        response = await fetchDrive(url, {
             method: 'POST',
-            headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, mimeType: DRIVE_FOLDER_MIME_TYPE, parents: [parentId] })
         });
-    } catch {
+    } catch (error) {
+        if (error instanceof GoogleDriveError) throw error;
         throw new GoogleDriveError('DRIVE_API_FAILED', 'Google Drive folder creation failed due to a network error.', { stage: 'create-folder', failure: 'network' });
     }
     const data = await response.json().catch(() => ({}));
@@ -517,10 +571,13 @@ async function assertTopicFolder(folderId, subjectFolderId, accessToken) {
 export async function uploadTopicFile(folderId, subjectFolderId, fileName, mimeType, content) {
     const configurationError = getConfigurationError();
     if (configurationError) throw configurationError;
-    const safeName = String(fileName || '').trim().replace(/[\\/\0]/g, '_');
+    const safeName = String(fileName || '').trim().replace(/[\u0000-\u001f\u007f\\/:]/g, '_');
     const normalizedMimeType = String(mimeType || '').trim().toLocaleLowerCase();
     if (!safeName || safeName.length > 240) throw new GoogleDriveError('INVALID_REQUEST', 'Choose a valid file name.');
-    if (!SUPPORTED_NOTE_TYPES.has(normalizedMimeType)) throw new GoogleDriveError('UNSUPPORTED_FILE_TYPE', 'Upload PDF, DOC/DOCX, TXT, PNG, JPG/JPEG, or WebP files only.');
+    const extension = safeName.split('.').at(-1)?.toLocaleLowerCase();
+    if (!SUPPORTED_NOTE_TYPES.has(normalizedMimeType) || UPLOAD_MIME_BY_EXTENSION[extension] !== normalizedMimeType) {
+        throw new GoogleDriveError('UNSUPPORTED_FILE_TYPE', 'Upload PDF, DOC/DOCX, TXT, PNG, JPG/JPEG, or WebP files with a matching file type.');
+    }
     if (!Buffer.isBuffer(content) || !content.length) throw new GoogleDriveError('INVALID_REQUEST', 'The uploaded file is empty.');
     if (content.length > MAX_UPLOAD_BYTES) throw new GoogleDriveError('FILE_TOO_LARGE', 'Files must be 20 MB or smaller.');
 
@@ -540,15 +597,15 @@ export async function uploadTopicFile(folderId, subjectFolderId, fileName, mimeT
 
     let response;
     try {
-        response = await fetch(url, {
+        response = await fetchDrive(url, {
             method: 'POST',
             headers: {
-                Authorization: `Bearer ${accessToken}`,
                 'Content-Type': `multipart/related; boundary=${boundary}`
             },
             body
         });
-    } catch {
+    } catch (error) {
+        if (error instanceof GoogleDriveError) throw error;
         throw new GoogleDriveError('DRIVE_API_FAILED', 'Google Drive upload failed due to a network error.', { stage: 'upload-file', failure: 'network' });
     }
     const data = await response.json().catch(() => ({}));
@@ -566,9 +623,7 @@ export async function listDriveFolderContents(folderId) {
     const configurationError = getConfigurationError();
     if (configurationError) throw configurationError;
     const accessToken = await getAccessToken();
-    const folder = requestedFolderId === getRootFolderId()
-        ? await getRootFolderMetadata(accessToken)
-        : await getFolderMetadata(requestedFolderId, accessToken);
+    const folder = await assertFolderWithinRoot(requestedFolderId, accessToken);
     const children = await listChildren(folder.id, accessToken);
     const folders = [];
     const files = [];
@@ -586,6 +641,68 @@ export async function listDriveFolderContents(folderId) {
         folders,
         files
     };
+}
+
+export async function getDriveFileContent(fileId, folderId) {
+    const configurationError = getConfigurationError();
+    if (configurationError) throw configurationError;
+    const requestedFileId = String(fileId || '').trim();
+    const requestedFolderId = String(folderId || '').trim();
+    if (!requestedFileId || !requestedFolderId) throw new GoogleDriveError('INVALID_REQUEST', 'A file ID and Notes Library folder ID are required.');
+    const accessToken = await getAccessToken();
+    const folder = await assertFolderWithinRoot(requestedFolderId, accessToken);
+    const file = (await listChildren(folder.id, accessToken)).find((item) => item.id === requestedFileId && SUPPORTED_NOTE_TYPES.has(item.mimeType));
+    if (!file) throw new GoogleDriveError('DRIVE_FILE_NOT_FOUND', 'The requested file is not available in this Notes Library folder.');
+
+    const isGoogleDocument = file.mimeType === 'application/vnd.google-apps.document';
+    const url = isGoogleDocument
+        ? new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}/export`)
+        : new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}`);
+    if (isGoogleDocument) url.searchParams.set('mimeType', 'application/pdf');
+    else url.searchParams.set('alt', 'media');
+
+    let response;
+    try {
+        response = await fetchDrive(url);
+    } catch (error) {
+        if (error instanceof GoogleDriveError) throw error;
+        throw new GoogleDriveError('DRIVE_API_FAILED', 'Google Drive file preview failed due to a network error.', { stage: 'preview-file', failure: 'network' });
+    }
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw classifyDriveResponse(response, data);
+    }
+    const mimeType = isGoogleDocument
+        ? 'application/pdf'
+        : (response.headers.get('content-type') || file.mimeType).split(';')[0].trim();
+    const name = isGoogleDocument && !/\.pdf$/i.test(file.name) ? `${file.name}.pdf` : file.name;
+    return { name, mimeType, content: Buffer.from(await response.arrayBuffer()) };
+}
+
+export async function deleteDriveFile(fileId, folderId) {
+    const configurationError = getConfigurationError();
+    if (configurationError) throw configurationError;
+    const requestedFileId = String(fileId || '').trim();
+    const requestedFolderId = String(folderId || '').trim();
+    if (!requestedFileId || !requestedFolderId) throw new GoogleDriveError('INVALID_REQUEST', 'A file ID and Notes Library folder ID are required.');
+    const accessToken = await getAccessToken();
+    const folder = await assertFolderWithinRoot(requestedFolderId, accessToken);
+    const file = (await listChildren(folder.id, accessToken)).find((item) => item.id === requestedFileId && SUPPORTED_NOTE_TYPES.has(item.mimeType));
+    if (!file) throw new GoogleDriveError('DRIVE_FILE_NOT_FOUND', 'The requested file is not available in this Notes Library folder.');
+
+    const url = withSharedDriveOptions(new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(file.id)}`));
+    let response;
+    try {
+        response = await fetchDrive(url, { method: 'DELETE' });
+    } catch (error) {
+        if (error instanceof GoogleDriveError) throw error;
+        throw new GoogleDriveError('DRIVE_API_FAILED', 'Google Drive file deletion failed due to a network error.', { stage: 'delete-file', failure: 'network' });
+    }
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw classifyDriveResponse(response, data, true);
+    }
+    return { id: file.id, deleted: true };
 }
 
 export async function getTopicFileContent(fileId, topicFolderId, subjectFolderId) {
@@ -611,8 +728,9 @@ export async function getTopicFileContent(fileId, topicFolderId, subjectFolderId
 
     let response;
     try {
-        response = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
-    } catch {
+        response = await fetchDrive(url, { headers: { Authorization: `Bearer ${accessToken}` } });
+    } catch (error) {
+        if (error instanceof GoogleDriveError) throw error;
         throw new GoogleDriveError('DRIVE_API_FAILED', 'Google Drive file preview failed due to a network error.', { stage: 'preview-file', failure: 'network' });
     }
     if (!response.ok) {

@@ -12,9 +12,9 @@
     "cors": "^2.8.6",
     "dotenv": "^18.0.4",
     "express": "^5.2.1",
-    "express-session": "^1.19.0",
     "googleapis": "^182.0.0",
     "lucide-react": "^1.48.0",
+    "pg": "^8.23.0",
     "recharts": "^3.10.1"
   },
   "devDependencies": {

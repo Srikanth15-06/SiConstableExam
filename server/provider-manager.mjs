@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { validateGoogleDriveConfig } from './google-drive-service.mjs';
 
 const envPath = path.resolve(process.cwd(), '.env');
 
@@ -72,19 +73,14 @@ export function getProviderConfig(providerName) {
 }
 
 export function getAllProviderStatus() {
+    const drive = validateGoogleDriveConfig();
     return {
         gemini: getProviderConfig('gemini'),
         groq: getProviderConfig('groq'),
         openrouter: getProviderConfig('openrouter'),
         googleDrive: {
-            available: Boolean(
-                process.env.GOOGLE_CLIENT_ID
-                && process.env.GOOGLE_CLIENT_SECRET
-                && process.env.GOOGLE_REDIRECT_URI
-                && process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID
-                && process.env.GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY
-            ),
-            configured: Boolean(process.env.GOOGLE_CLIENT_ID || process.env.GOOGLE_CLIENT_SECRET)
+            ...drive,
+            available: drive.configured && drive.adminAuthConfigured
         }
     };
 }

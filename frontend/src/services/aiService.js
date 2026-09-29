@@ -116,10 +116,20 @@ function getDriveErrorMessage(code, fallback = 'Google Drive notes could not be 
   const messages = {
     MISSING_GOOGLE_OAUTH_CONFIG: 'Google Drive OAuth is not configured on the server.',
     MISSING_DRIVE_TOKEN_ENCRYPTION_KEY: 'Google Drive token encryption is not configured on the server.',
+    DRIVE_TOKEN_STORAGE_NOT_CONFIGURED: 'Google Drive needs persistent token storage on the server before it can connect.',
     MISSING_ROOT_FOLDER: 'Google Drive root folder is not configured.',
     DRIVE_PERMISSION_DENIED: 'The connected Google account needs access to this folder; folder creation and uploads require Editor access.',
     DRIVE_QUOTA_EXCEEDED: 'Google Drive storage quota has been reached. Free up space in the Drive account or choose a Drive account with available storage before uploading files.',
+    FOLDER_ACCESS_FAILED: 'The connected Google account cannot access the configured Notes Library folder.',
     DRIVE_FOLDER_NOT_FOUND: 'The requested Google Drive folder was not found.',
+    DRIVE_FILE_NOT_FOUND: 'The requested Google Drive file was not found in the Notes Library.',
+    DRIVE_API_NOT_ENABLED: 'Google Drive API is not enabled for the configured Google Cloud project.',
+    DRIVE_RATE_LIMITED: 'Google Drive is receiving too many requests. Wait briefly and try again.',
+    DRIVE_AUTH_REVOKED: 'Google Drive authorization expired or was revoked. Reconnect the Google account.',
+    AUTH_REQUIRED: 'Google Drive is not connected. Connect the Google account to continue.',
+    GOOGLE_REDIRECT_URI_MISMATCH: 'Google OAuth callback configuration does not match Google Cloud.',
+    GOOGLE_INVALID_CLIENT: 'Google OAuth credentials are invalid on the server.',
+    GOOGLE_UNAUTHORIZED_CLIENT: 'The Google OAuth client is not authorized for this application.',
     DRIVE_AUTH_FAILED: 'Google Drive authentication failed. Please reconnect your Google account.',
     DRIVE_TOKEN_STORAGE_FAILED: 'The saved Google Drive authorization could not be accessed.',
     DRIVE_API_FAILED: 'Google Drive is temporarily unavailable.'
@@ -136,17 +146,52 @@ export async function getDriveAuthUrl() {
   return data.authUrl;
 }
 
+export async function loginDriveAdmin(key) {
+  const response = await fetch(apiUrl('/api/drive/admin/session'), {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) {
+    throw new AIServiceError(data.message || 'Administrator access could not be verified.', {
+      provider: 'Google Drive', code: data.code || 'DRIVE_ADMIN_AUTH_INVALID', status: response.status
+    });
+  }
+  return data;
+}
+
+export async function logoutDriveAdmin() {
+  const response = await fetch(apiUrl('/api/drive/admin/session'), {
+    method: 'DELETE',
+    credentials: 'include'
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) {
+    throw new AIServiceError(data.message || 'Administrator session could not be closed.', {
+      provider: 'Google Drive', code: data.code || 'DRIVE_API_FAILED', status: response.status
+    });
+  }
+  return data;
+}
+
 export async function checkDriveConnection() {
-  const response = await fetch(apiUrl('/api/drive/auth/status'));
+  const response = await fetch(apiUrl('/api/drive/auth/status'), { credentials: 'include' });
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
-    return { connected: false, message: data.message || 'Google Drive is not connected.' };
+    return { ...data, connected: false, available: false };
   }
-  return { connected: Boolean(data.connected || data.available), message: data.message || null };
+  return {
+    ...data,
+    connected: Boolean(data.connected || data.authenticated),
+    available: Boolean(data.available),
+    message: data.message || null
+  };
 }
 
 export async function disconnectDrive() {
-  const response = await fetch(apiUrl('/api/drive/logout'), { method: 'POST', credentials: 'include' });
+  const response = await fetch(apiUrl('/api/drive/disconnect'), { method: 'POST', credentials: 'include' });
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data.success) {
     throw new AIServiceError(data.message || 'Google Drive logout failed.', { provider: 'Google Drive', code: data.code || 'DRIVE_AUTH_FAILED', status: response.status });
@@ -172,7 +217,7 @@ export async function getDriveStatus() {
       diagnostics: data.diagnostics
     });
   }
-  return { rootFolderId: data.rootFolderId };
+  return data;
 }
 
 export async function getDriveFolder(folderId) {
@@ -180,7 +225,7 @@ export async function getDriveFolder(folderId) {
     throw new AIServiceError('A Google Drive folder ID is required.', { provider: 'Google Drive', code: 'INVALID_REQUEST' });
   }
   try {
-    const response = await fetch(apiUrl(`/api/drive/folders/${encodeURIComponent(folderId)}`));
+    const response = await fetch(apiUrl(`/api/drive/folders/${encodeURIComponent(folderId)}`), { credentials: 'include' });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !Array.isArray(data.folders) || !Array.isArray(data.files)) {
       const reason = getDriveErrorMessage(data.code, data.message);
@@ -229,12 +274,13 @@ export async function uploadDriveFile(folderId, subjectFolderId, file) {
   };
   const extension = file.name.split('.').at(-1)?.toLocaleLowerCase();
   const query = new URLSearchParams({
+    folderId,
     parentFolderId: subjectFolderId,
     name: file.name,
     mimeType: file.type || mimeByExtension[extension] || 'application/octet-stream'
   });
   try {
-    const response = await fetch(apiUrl(`/api/drive/folders/${encodeURIComponent(folderId)}/files?${query}`), {
+    const response = await fetch(apiUrl(`/api/drive/upload?${query}`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/octet-stream' },
       body: file
@@ -252,8 +298,23 @@ export async function uploadDriveFile(folderId, subjectFolderId, file) {
   }
 }
 
+export async function deleteDriveFile(fileId, folderId) {
+  const query = new URLSearchParams({ folderId });
+  const response = await fetch(apiUrl(`/api/drive/files/${encodeURIComponent(fileId)}?${query}`), {
+    method: 'DELETE',
+    credentials: 'include'
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success) {
+    throw new AIServiceError(data.message || getDriveErrorMessage(data.code), {
+      provider: 'Google Drive', code: data.code || 'DRIVE_API_FAILED', requestId: data.requestId, status: response.status
+    });
+  }
+  return data;
+}
+
 export function getDriveFileContentUrl(topicFolderId, subjectFolderId, fileId, download = false) {
-  const query = new URLSearchParams({ parentFolderId: subjectFolderId });
+  const query = new URLSearchParams({ folderId: topicFolderId, parentFolderId: subjectFolderId });
   if (download) query.set('download', '1');
-  return apiUrl(`/api/drive/folders/${encodeURIComponent(topicFolderId)}/files/${encodeURIComponent(fileId)}/content?${query}`);
+  return apiUrl(`/api/drive/files/${encodeURIComponent(fileId)}?${query}`);
 }

@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useMemo, useEffectEvent, useRef } from 'react';
 import {
   BookOpen, Folder, FolderPlus, Upload, Download, FileText, Target, Clock, ChevronRight, BarChart2, User, Sparkles,
-  ArrowLeft, Send, ShieldAlert, Play, X, Maximize2, Minimize2, Brain, Lock, Unlock, RotateCcw, Code, LogOut, Mail, KeyRound, UserPlus,
+  ArrowLeft, Send, ShieldAlert, Play, X, Maximize2, Minimize2, Brain, Lock, Unlock, RotateCcw, Code, LogOut, Mail, KeyRound, UserPlus, RefreshCw, Trash2,
   Volume2, VolumeX, CalendarDays
 } from 'lucide-react';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell
 } from 'recharts';
-import { generateQuestions, generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, provisionDriveFolders, uploadDriveFile, getDriveAuthUrl, checkDriveConnection, disconnectDrive, getDriveFileContentUrl } from './services/aiService.js';
+import { generateQuestions, generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, provisionDriveFolders, uploadDriveFile, getDriveAuthUrl, checkDriveConnection, disconnectDrive, deleteDriveFile, getDriveFileContentUrl, loginDriveAdmin, logoutDriveAdmin } from './services/aiService.js';
 import { calculateTestResult, normalizeAnswer } from './test-results.js';
 import {
   buildPlannerSnapshot,
@@ -344,6 +344,12 @@ export default function App() {
   const [isDriveUploading, setIsDriveUploading] = useState(false);
   const [driveUploadMessage, setDriveUploadMessage] = useState('');
   const [isGoogleDriveConnected, setIsGoogleDriveConnected] = useState(false);
+  const [driveConnectionStatus, setDriveConnectionStatus] = useState('checking');
+  const [driveDiagnostics, setDriveDiagnostics] = useState(null);
+  const [isDriveAdminAuthorized, setIsDriveAdminAuthorized] = useState(false);
+  const [driveAdminKey, setDriveAdminKey] = useState('');
+  const [isDriveAdminLoggingIn, setIsDriveAdminLoggingIn] = useState(false);
+  const [driveDeletingFileId, setDriveDeletingFileId] = useState('');
   const [drivePreviewFile, setDrivePreviewFile] = useState(null);
   const [isDrivePreviewFullscreen, setIsDrivePreviewFullscreen] = useState(false);
   const driveRequestSequenceRef = useRef(0);
@@ -369,8 +375,12 @@ export default function App() {
       try {
         const status = await checkDriveConnection();
         setIsGoogleDriveConnected(Boolean(status.connected));
+        setDriveConnectionStatus(status.available ? 'connected' : status.connected ? 'error' : status.code && !['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED'].includes(status.code) ? 'error' : 'not-connected');
+        setDriveDiagnostics(status);
+        setIsDriveAdminAuthorized(Boolean(status.adminAuthorized));
       } catch {
         setIsGoogleDriveConnected(false);
+        setDriveConnectionStatus('error');
       }
     };
     void syncDriveConnectionState();
@@ -385,14 +395,21 @@ export default function App() {
         setDriveProvisionMessage('Google Drive connected successfully.');
         window.history.replaceState({}, '', window.location.pathname);
       }
-      if (params.get('drive_error')) {
+      if (params.get('drive_error') || params.get('drive') === 'error') {
+        const code = params.get('drive_code') || params.get('drive_error');
         const errors = {
           authorization_state_invalid: 'Google Drive authorization could not be verified. Start the connection again.',
           authorization_cancelled: 'Google Drive authorization was cancelled.',
-          connection_failed: 'Google Drive connection failed. Check the OAuth configuration and try again.'
+          connection_failed: 'Google Drive connection failed. Check the OAuth configuration and try again.',
+          DRIVE_TOKEN_STORAGE_NOT_CONFIGURED: 'Google Drive is not ready yet. Persistent token storage must be configured on the server.',
+          GOOGLE_REDIRECT_URI_MISMATCH: 'Google Drive callback configuration does not match Google Cloud.',
+          AUTH_REQUIRED: 'Google Drive authorization is required. Connect your Google account.',
+          DRIVE_AUTH_REVOKED: 'Google Drive access was revoked. Connect your Google account again.'
         };
-        setDriveNotesError(errors[params.get('drive_error')] || 'Google Drive connection failed.');
+        setDriveNotesError(errors[code] || 'Google Drive connection failed.');
         setIsGoogleDriveConnected(false);
+        setDriveConnectionStatus('error');
+        setDriveDiagnostics((previous) => ({ ...previous, code }));
         window.history.replaceState({}, '', window.location.pathname);
       }
     };
@@ -807,7 +824,70 @@ export default function App() {
     }
   };
 
+  const handleRefreshDrive = async () => {
+    setDriveNotesError('');
+    try {
+      const status = await checkDriveConnection();
+      setDriveDiagnostics(status);
+      setIsGoogleDriveConnected(Boolean(status.connected));
+      setIsDriveAdminAuthorized(Boolean(status.adminAuthorized));
+      setDriveConnectionStatus(status.available ? 'connected' : status.connected ? 'error' : status.code && !['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED'].includes(status.code) ? 'error' : 'not-connected');
+      if (!status.available || !status.rootFolderId) {
+        setDriveNotesError(status.message || 'Google Drive is not available right now.');
+        return;
+      }
+      const folderId = driveCurrentFolderId || status.rootFolderId;
+      const breadcrumbs = driveBreadcrumbs.length ? driveBreadcrumbs : [{ id: status.rootFolderId, name: 'Subjects' }];
+      setDriveRootFolderId(status.rootFolderId);
+      await loadDriveFolder(folderId, breadcrumbs);
+    } catch (error) {
+      setDriveConnectionStatus('error');
+      setDriveNotesError(error.message || 'Google Drive could not be refreshed.');
+    }
+  };
+
+  const handleDriveAdminLogin = async (event) => {
+    event.preventDefault();
+    if (!driveAdminKey || isDriveAdminLoggingIn) return;
+    setIsDriveAdminLoggingIn(true);
+    setDriveNotesError('');
+    try {
+      await loginDriveAdmin(driveAdminKey);
+      setDriveAdminKey('');
+      const status = await checkDriveConnection();
+      setDriveDiagnostics(status);
+      setIsDriveAdminAuthorized(Boolean(status.adminAuthorized));
+      setIsGoogleDriveConnected(Boolean(status.connected));
+      setDriveConnectionStatus(status.available ? 'connected' : status.connected ? 'error' : status.code && !['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED'].includes(status.code) ? 'error' : 'not-connected');
+      if (status.available && status.rootFolderId) {
+        setDriveRootFolderId(status.rootFolderId);
+        await loadDriveFolder(status.rootFolderId, [{ id: status.rootFolderId, name: 'Subjects' }]);
+      } else if (status.message) {
+        setDriveNotesError(status.message);
+      }
+    } catch (error) {
+      setDriveNotesError(error.message || 'Administrator access could not be verified.');
+    } finally {
+      setIsDriveAdminLoggingIn(false);
+    }
+  };
+
+  const handleDriveAdminLogout = async () => {
+    try {
+      await logoutDriveAdmin();
+      setIsDriveAdminAuthorized(false);
+      setDriveNotesError('Administrator session ended.');
+    } catch (error) {
+      setDriveNotesError(error.message || 'Administrator session could not be closed.');
+    }
+  };
+
   const handleConnectGoogleDrive = async () => {
+    if (!isDriveAdminAuthorized) {
+      setCurrentView('drive-notes');
+      setDriveNotesError('Administrator access is required to connect Google Drive.');
+      return;
+    }
     try {
       const authUrl = await getDriveAuthUrl();
       window.location.href = authUrl;
@@ -820,6 +900,8 @@ export default function App() {
     try {
       await disconnectDrive();
       setIsGoogleDriveConnected(false);
+      setDriveConnectionStatus('not-connected');
+      setDriveDiagnostics({ connected: false, available: false, message: 'Google Drive is disconnected.' });
       setDriveRootFolderId('');
       setDriveCurrentFolderId('');
       setDriveCurrentFolders([]);
@@ -830,6 +912,22 @@ export default function App() {
       setDriveNotesError('Google Drive disconnected.');
     } catch (error) {
       setDriveNotesError(error.message || 'Google Drive disconnect failed.');
+    }
+  };
+
+  const handleDeleteDriveFile = async (file) => {
+    if (!driveCurrentFolderId || !window.confirm(`Delete "${file.name}" from Google Drive?`)) return;
+    setDriveDeletingFileId(file.id);
+    setDriveNotesError('');
+    setDriveUploadMessage('');
+    try {
+      await deleteDriveFile(file.id, driveCurrentFolderId);
+      setDriveUploadMessage(`${file.name} deleted.`);
+      await loadDriveFolder(driveCurrentFolderId, driveBreadcrumbs);
+    } catch (error) {
+      setDriveNotesError(error.message || 'Google Drive file could not be deleted.');
+    } finally {
+      setDriveDeletingFileId('');
     }
   };
 
@@ -1414,15 +1512,22 @@ export default function App() {
             <div className="pt-2 border-t border-slate-700/60">
               <div className="flex items-center justify-between gap-2 text-[11px] text-slate-300">
                 <span>Drive</span>
-                <span className={`inline-flex rounded-full px-2 py-0.5 ${isGoogleDriveConnected ? 'bg-emerald-500/15 text-emerald-300' : 'bg-slate-700 text-slate-400'}`}>
-                  {isGoogleDriveConnected ? 'Connected' : 'Not connected'}
+                <span className={`inline-flex rounded-full px-2 py-0.5 ${driveConnectionStatus === 'connected' ? 'bg-emerald-500/15 text-emerald-300' : driveConnectionStatus === 'error' ? 'bg-rose-500/15 text-rose-300' : 'bg-slate-700 text-slate-400'}`}>
+                  {driveConnectionStatus === 'connected' ? 'Connected' : driveConnectionStatus === 'error' ? 'Error' : 'Not connected'}
                 </span>
               </div>
               <button
-                onClick={isGoogleDriveConnected ? handleDisconnectGoogleDrive : handleConnectGoogleDrive}
+                onClick={() => {
+                  if (!isDriveAdminAuthorized) {
+                    setCurrentView('drive-notes');
+                    return;
+                  }
+                  if (isGoogleDriveConnected) handleDisconnectGoogleDrive();
+                  else handleConnectGoogleDrive();
+                }}
                 className="mt-2 w-full rounded-lg border border-teal-500/40 bg-slate-800 px-2.5 py-1.5 text-[11px] font-semibold text-teal-200 hover:bg-slate-700"
               >
-                {isGoogleDriveConnected ? 'Disconnect Google Drive' : 'Connect Google Drive'}
+                {!isDriveAdminAuthorized ? 'Open Notes Library' : isGoogleDriveConnected ? 'Disconnect Google Drive' : 'Connect Google Drive'}
               </button>
             </div>
           </div>
@@ -2588,7 +2693,7 @@ export default function App() {
                   {(driveCurrentSubject || driveCurrentTopic) && <p className="mt-1 text-sm text-slate-400">{[driveCurrentSubject, driveCurrentTopic].filter(Boolean).join(' / ')}</p>}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  {isGoogleDriveConnected ? (
+                  {isDriveAdminAuthorized && (isGoogleDriveConnected ? (
                     <button onClick={handleDisconnectGoogleDrive} className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800">
                       Disconnect Google Drive
                     </button>
@@ -2596,13 +2701,72 @@ export default function App() {
                     <button onClick={handleConnectGoogleDrive} className="rounded-lg bg-teal-600 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-500">
                       Connect Google Drive
                     </button>
+                  ))}
+                  {isDriveAdminAuthorized && (
+                    <button onClick={handleDriveAdminLogout} aria-label="End administrator session" title="Lock Drive management" className="rounded-lg border border-slate-700 p-2 text-slate-300 hover:bg-slate-800">
+                      <Lock className="h-4 w-4" />
+                    </button>
                   )}
+                  <button
+                    onClick={handleRefreshDrive}
+                    disabled={isDriveNotesLoading}
+                    aria-label="Refresh Google Drive Notes Library"
+                    title="Refresh"
+                    className="rounded-lg border border-slate-700 p-2 text-slate-300 hover:bg-slate-800 disabled:opacity-50"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${isDriveNotesLoading ? 'animate-spin' : ''}`} />
+                  </button>
                   <button onClick={handleDriveBack} disabled={isDriveNotesLoading} className="flex items-center gap-2 rounded-lg bg-slate-800 px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-700 disabled:opacity-50">
                     <ArrowLeft className="h-4 w-4" />
                     Back
                   </button>
                 </div>
               </div>
+
+              <section aria-label="Google Drive connection status" className="rounded-lg border border-slate-700 bg-slate-800/70 p-4">
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
+                  <div className="flex items-center gap-2">
+                    <span className={`h-2 w-2 rounded-full ${driveConnectionStatus === 'connected' ? 'bg-emerald-400' : driveConnectionStatus === 'checking' ? 'bg-amber-300' : 'bg-rose-400'}`} />
+                    <span className="font-semibold text-slate-100">Google Drive</span>
+                    <span className={driveConnectionStatus === 'connected' ? 'text-emerald-300' : driveConnectionStatus === 'checking' ? 'text-amber-200' : 'text-rose-300'}>
+                      {driveConnectionStatus === 'connected' ? 'Connected' : driveConnectionStatus === 'checking' ? 'Connecting...' : driveConnectionStatus === 'not-connected' ? 'Not Connected' : 'Error'}
+                    </span>
+                  </div>
+                  <span className="text-slate-400">Root Folder: <span className={driveDiagnostics?.rootFolderAccessible ? 'text-emerald-300' : 'text-slate-300'}>{driveDiagnostics?.rootFolderAccessible ? 'Connected' : driveDiagnostics?.rootFolderConfigured ? 'Unavailable' : 'Not configured'}</span></span>
+                  <span className="text-slate-400">Files: <span className="text-slate-200">{driveCurrentFiles.length}</span></span>
+                  {driveDiagnostics?.message && driveConnectionStatus !== 'connected' && <span className="basis-full text-xs text-slate-400">{driveDiagnostics.message}</span>}
+                </div>
+                {driveDiagnostics && !driveDiagnostics.adminAuthConfigured && (
+                  <p className="mt-3 border-t border-slate-700 pt-3 text-xs text-amber-200">Drive management is disabled because the server administrator key is not configured.</p>
+                )}
+                {driveDiagnostics?.adminAuthConfigured && !isDriveAdminAuthorized && (
+                  <form onSubmit={handleDriveAdminLogin} className="mt-3 flex flex-col gap-2 border-t border-slate-700 pt-3 sm:flex-row sm:items-end">
+                    <label className="min-w-0 flex-1 text-xs font-semibold text-slate-300" htmlFor="drive-admin-key">
+                      Notes Library administrator key
+                      <input
+                        id="drive-admin-key"
+                        type="password"
+                        autoComplete="current-password"
+                        value={driveAdminKey}
+                        onChange={(event) => setDriveAdminKey(event.target.value)}
+                        className="mt-1 w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-teal-500"
+                      />
+                    </label>
+                    <button type="submit" disabled={!driveAdminKey || isDriveAdminLoggingIn} className="rounded-md bg-slate-700 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-600 disabled:opacity-50">
+                      {isDriveAdminLoggingIn ? 'Verifying...' : 'Unlock management'}
+                    </button>
+                  </form>
+                )}
+                <details className="mt-3 border-t border-slate-700 pt-3 text-xs text-slate-400">
+                  <summary className="cursor-pointer font-semibold text-slate-300">Technical details</summary>
+                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-slate-950 p-3 text-[11px]">{JSON.stringify({
+                    code: driveDiagnostics?.code || null,
+                    checks: driveDiagnostics?.checks || null,
+                    tokenStorage: driveDiagnostics?.tokenStorage || null,
+                    diagnostics: driveDiagnostics?.diagnostics || null
+                  }, null, 2)}</pre>
+                </details>
+              </section>
 
               <nav aria-label="Google Drive breadcrumbs" className="flex flex-wrap items-center gap-1 text-sm">
                 {driveBreadcrumbs.map((crumb, index) => (
@@ -2620,13 +2784,13 @@ export default function App() {
               </nav>
 
               <div className="flex flex-wrap items-center gap-3">
-                {driveBreadcrumbs.length === 1 && driveCurrentFolderId === driveRootFolderId && (
+                {isDriveAdminAuthorized && driveBreadcrumbs.length === 1 && driveCurrentFolderId === driveRootFolderId && (
                   <button onClick={handleProvisionDriveFolders} disabled={isDriveProvisioning || isDriveNotesLoading} className="flex items-center gap-2 rounded-lg border border-teal-500/40 bg-teal-600/15 px-3 py-2 text-xs font-semibold text-teal-200 hover:bg-teal-600/25 disabled:opacity-50">
                     <FolderPlus className="h-4 w-4" />
                     {isDriveProvisioning ? 'Creating missing folders...' : 'Create missing syllabus folders'}
                   </button>
                 )}
-                {driveBreadcrumbs.length === 3 && (
+                {isDriveAdminAuthorized && driveBreadcrumbs.length === 3 && (
                   <>
                     <input
                       ref={driveUploadInputRef}
@@ -2647,8 +2811,15 @@ export default function App() {
               {driveProvisionMessage && <p role="status" className="text-xs text-teal-200">{driveProvisionMessage}</p>}
               {driveUploadMessage && <p role="status" className="text-xs text-teal-200">{driveUploadMessage}</p>}
 
-              {isDriveNotesLoading && <p className="text-sm text-slate-300">Loading Google Drive notes...</p>}
-              {driveNotesError && <p role="alert" className="text-xs text-red-300 bg-red-500/10 border border-red-500/30 rounded-lg p-3">{driveNotesError}</p>}
+              {isDriveNotesLoading && <p className="text-sm text-slate-300">{driveConnectionStatus === 'checking' ? 'Connecting to Google Drive...' : 'Loading Google Drive notes...'}</p>}
+              {driveNotesError && (
+                <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3">
+                  <p className="text-xs text-red-200">{driveNotesError}</p>
+                  <button onClick={handleRefreshDrive} disabled={isDriveNotesLoading} className="rounded-md border border-red-300/30 px-3 py-1.5 text-xs font-semibold text-red-100 hover:bg-red-500/10 disabled:opacity-50">
+                    Retry
+                  </button>
+                </div>
+              )}
 
               {!isDriveNotesLoading && !driveNotesError && driveCurrentFolders.length > 0 && (
                 <section aria-label={driveBreadcrumbs.length === 1 ? 'Subjects' : 'Topics and folders'} className="space-y-3">
@@ -2674,23 +2845,30 @@ export default function App() {
               {!isDriveNotesLoading && !driveNotesError && driveCurrentFiles.length > 0 && (
                 <section className="space-y-3" aria-label="Google Drive files">
                   <h3 className="text-sm font-bold text-slate-200">{driveCurrentFiles.length} files</h3>
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {driveCurrentFiles.map((file) => {
                       return (
-                        <button
-                          key={file.id}
-                          type="button"
-                          onClick={() => handleOpenDriveFile(file)}
-                          className="flex min-w-0 items-center gap-3 rounded-lg border border-slate-700 bg-slate-800 p-4 text-left hover:border-teal-500 hover:bg-slate-800/80"
-                        >
-                          <FileText className="h-5 w-5 shrink-0 text-teal-300" />
-                          <span className="min-w-0 flex-1">
-                            <span className="block truncate font-semibold text-slate-100">{file.name}</span>
-                            <span className="mt-1 block truncate text-xs text-slate-400">{file.mimeType}</span>
-                            {file.modifiedTime && <span className="mt-1 block text-xs text-slate-500">Modified {new Date(file.modifiedTime).toLocaleDateString()}</span>}
-                          </span>
-                          <span className="shrink-0 text-xs font-semibold text-teal-300">View</span>
-                        </button>
+                        <article key={file.id} className="flex min-w-0 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 p-2 hover:border-teal-500/70">
+                          <button type="button" onClick={() => handleOpenDriveFile(file)} className="flex min-w-0 flex-1 items-center gap-3 p-2 text-left">
+                            <FileText className="h-5 w-5 shrink-0 text-teal-300" />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate font-semibold text-slate-100">{file.name}</span>
+                              <span className="mt-1 block truncate text-xs text-slate-400">{file.mimeType}</span>
+                              {file.modifiedTime && <span className="mt-1 block text-xs text-slate-500">Modified {new Date(file.modifiedTime).toLocaleDateString()}</span>}
+                            </span>
+                            <span className="shrink-0 text-xs font-semibold text-teal-300">View</span>
+                          </button>
+                          {isDriveAdminAuthorized && <button
+                            type="button"
+                            onClick={() => handleDeleteDriveFile(file)}
+                            disabled={Boolean(driveDeletingFileId)}
+                            aria-label={`Delete ${file.name}`}
+                            title="Delete file"
+                            className="rounded-md p-2 text-slate-400 hover:bg-rose-500/10 hover:text-rose-300 disabled:opacity-40"
+                          >
+                            {driveDeletingFileId === file.id ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                          </button>}
+                        </article>
                       );
                     })}
                   </div>

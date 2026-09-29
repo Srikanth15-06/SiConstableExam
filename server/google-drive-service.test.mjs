@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { google } from 'googleapis';
+import { getGoogleDriveTokenStorageStatus } from './drive-token-store.mjs';
 
 const driveTestDirectory = await mkdtemp(path.join(os.tmpdir(), 'drive-service-tests-'));
 process.env.GOOGLE_DRIVE_TOKEN_FILE = path.join(driveTestDirectory, 'token.enc');
@@ -22,6 +24,7 @@ delete process.env.GOOGLE_DRIVE_ACCESS_TOKEN;
 const {
     buildGoogleDriveAuthUrl,
     clearGoogleDriveToken,
+    deleteDriveFile,
     exchangeGoogleDriveCode,
     getGoogleDriveStatus,
     listDriveFolderContents,
@@ -36,6 +39,10 @@ test('validateGoogleDriveConfig reports OAuth setup state without exposing secre
         clientSecretConfigured: false,
         redirectUriConfigured: false,
         tokenEncryptionKeyConfigured: true,
+        tokenStorageConfigured: true,
+        tokenStorageDurable: true,
+        tokenStorageProvider: 'encrypted-file',
+        adminAuthConfigured: false,
         rootFolderConfigured: true,
         connected: false
     });
@@ -50,6 +57,10 @@ test('validateGoogleDriveConfig reports OAuth setup state without exposing secre
         clientSecretConfigured: true,
         redirectUriConfigured: true,
         tokenEncryptionKeyConfigured: true,
+        tokenStorageConfigured: true,
+        tokenStorageDurable: true,
+        tokenStorageProvider: 'encrypted-file',
+        adminAuthConfigured: false,
         rootFolderConfigured: false,
         connected: false
     });
@@ -61,6 +72,10 @@ test('validateGoogleDriveConfig reports OAuth setup state without exposing secre
         clientSecretConfigured: true,
         redirectUriConfigured: true,
         tokenEncryptionKeyConfigured: true,
+        tokenStorageConfigured: true,
+        tokenStorageDurable: true,
+        tokenStorageProvider: 'encrypted-file',
+        adminAuthConfigured: false,
         rootFolderConfigured: true,
         connected: false
     });
@@ -72,15 +87,40 @@ test('validateGoogleDriveConfig reports OAuth setup state without exposing secre
 });
 
 test('Drive status reports missing OAuth configuration without disclosing secrets', async () => {
-    assert.deepEqual(await getGoogleDriveStatus(), {
-        success: false,
-        provider: 'googleDrive',
-        configured: false,
-        available: false,
-        rootFolderId: 'configured-folder-id',
-        checks: { oauth: false, rootFolder: true, driveApi: false, folderAccess: false },
-        code: 'MISSING_GOOGLE_OAUTH_CONFIG'
-    });
+    const status = await getGoogleDriveStatus();
+    assert.equal(status.ok, false);
+    assert.equal(status.configured, false);
+    assert.equal(status.available, false);
+    assert.equal(status.provider, 'google-drive');
+    assert.equal(status.rootFolderConfigured, true);
+    assert.equal(status.code, 'MISSING_GOOGLE_OAUTH_CONFIG');
+    assert.equal(status.checks.credentials, false);
+});
+
+test('production token storage rejects the ephemeral default path', () => {
+    const originalNodeEnv = process.env.NODE_ENV;
+    const originalDatabaseUrl = process.env.DATABASE_URL;
+    const originalTokenFile = process.env.GOOGLE_DRIVE_TOKEN_FILE;
+    process.env.NODE_ENV = 'production';
+    delete process.env.DATABASE_URL;
+    delete process.env.GOOGLE_DRIVE_TOKEN_FILE;
+
+    try {
+        const ephemeral = getGoogleDriveTokenStorageStatus();
+        assert.equal(ephemeral.configured, false);
+        assert.equal(ephemeral.durable, false);
+        process.env.GOOGLE_DRIVE_TOKEN_FILE = '/var/data/google-drive-token.enc';
+        const mounted = getGoogleDriveTokenStorageStatus();
+        assert.equal(mounted.configured, true);
+        assert.equal(mounted.durable, true);
+    } finally {
+        if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = originalNodeEnv;
+        if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
+        else process.env.DATABASE_URL = originalDatabaseUrl;
+        if (originalTokenFile === undefined) delete process.env.GOOGLE_DRIVE_TOKEN_FILE;
+        else process.env.GOOGLE_DRIVE_TOKEN_FILE = originalTokenFile;
+    }
 });
 
 test('Drive status preserves OAuth connection state during a temporary Drive API outage', async () => {
@@ -103,7 +143,7 @@ test('Drive status preserves OAuth connection state during a temporary Drive API
         assert.equal(status.code, 'DRIVE_API_FAILED');
     } finally {
         globalThis.fetch = originalFetch;
-        delete process.env.GOOGLE_DRIVE_TOKEN;
+        await clearGoogleDriveToken();
         process.env.GOOGLE_CLIENT_ID = '';
         process.env.GOOGLE_CLIENT_SECRET = '';
         process.env.GOOGLE_REDIRECT_URI = '';
@@ -150,10 +190,11 @@ test('Drive lists direct child folders/files and handles permission and folder e
     const originalFetch = globalThis.fetch;
     let driveStatus = 403;
     const driveUrls = [];
-    globalThis.fetch = async (url) => {
+    globalThis.fetch = async (url, options = {}) => {
         if (String(url).includes('oauth2.googleapis.com/token')) {
             return new Response(JSON.stringify({ access_token: 'test-access-token', expires_in: 3600 }), { status: 200 });
         }
+        if (options.method === 'DELETE') return new Response(null, { status: 204 });
         const driveUrl = new URL(url);
         driveUrls.push(driveUrl);
         if (driveStatus !== 200) {
@@ -163,10 +204,10 @@ test('Drive lists direct child folders/files and handles permission and folder e
             return new Response(JSON.stringify({ id: 'test-notes-root', name: 'Notes', mimeType: 'application/vnd.google-apps.folder' }), { status: 200 });
         }
         const folderMetadata = {
-            'english-id': { id: 'english-id', name: 'English', mimeType: 'application/vnd.google-apps.folder' },
-            'arithmetic-id': { id: 'arithmetic-id', name: 'Arithmetic', mimeType: 'application/vnd.google-apps.folder' },
-            'sentences-id': { id: 'sentences-id', name: 'Sentences', mimeType: 'application/vnd.google-apps.folder' },
-            'percent-topic': { id: 'percent-topic', name: 'Percentage', mimeType: 'application/vnd.google-apps.folder' }
+            'english-id': { id: 'english-id', name: 'English', mimeType: 'application/vnd.google-apps.folder', parents: ['test-notes-root'] },
+            'arithmetic-id': { id: 'arithmetic-id', name: 'Arithmetic', mimeType: 'application/vnd.google-apps.folder', parents: ['test-notes-root'] },
+            'sentences-id': { id: 'sentences-id', name: 'Sentences', mimeType: 'application/vnd.google-apps.folder', parents: ['english-id'] },
+            'percent-topic': { id: 'percent-topic', name: 'Percentage', mimeType: 'application/vnd.google-apps.folder', parents: ['arithmetic-id'] }
         };
         const metadataMatch = driveUrl.pathname.match(/\/files\/([^/]+)$/);
         if (metadataMatch) {
@@ -195,16 +236,27 @@ test('Drive lists direct child folders/files and handles permission and folder e
 
     try {
         driveStatus = 200;
-        assert.deepEqual(await getGoogleDriveStatus(), {
-            success: true,
-            provider: 'googleDrive',
-            configured: true,
-            available: true,
-            rootFolderId: 'test-notes-root',
-            checks: { oauth: true, rootFolder: true, driveApi: true, folderAccess: true }
+        const status = await getGoogleDriveStatus();
+        assert.equal(status.ok, true);
+        assert.equal(status.available, true);
+        assert.equal(status.authenticated, true);
+        assert.equal(status.rootFolderAccessible, true);
+        assert.equal(status.checks.listFiles, true);
+        assert.equal(status.rootFolderId, 'test-notes-root');
+        const connectionTest = await testGoogleDriveConnection();
+        assert.equal(connectionTest.ok, true);
+        assert.deepEqual(connectionTest.tests, {
+            credentials: true,
+            authentication: true,
+            driveApi: true,
+            rootFolder: true,
+            listFiles: true
         });
-        assert.deepEqual(await testGoogleDriveConnection(), { folderAccessible: true });
         driveStatus = 403;
+        const inaccessibleStatus = await getGoogleDriveStatus();
+        assert.equal(inaccessibleStatus.available, false);
+        assert.equal(inaccessibleStatus.rootFolderAccessible, false);
+        assert.equal(inaccessibleStatus.code, 'FOLDER_ACCESS_FAILED');
         await assert.rejects(listDriveFolderContents('english-id'), (error) => error.code === 'DRIVE_PERMISSION_DENIED');
         driveStatus = 404;
         await assert.rejects(listDriveFolderContents('english-id'), (error) => error.code === 'DRIVE_FOLDER_NOT_FOUND');
@@ -223,6 +275,9 @@ test('Drive lists direct child folders/files and handles permission and folder e
         assert.equal(topic.files[0].size, '4096');
         assert.equal(topic.files[0].modifiedTime, '2026-01-02T00:00:00Z');
         assert.equal(Object.hasOwn(topic.files[0], 'access_token'), false);
+        await assert.rejects(listDriveFolderContents('outside-folder'), (error) => error.code === 'DRIVE_FOLDER_NOT_FOUND');
+        assert.deepEqual(await deleteDriveFile('sentence-pdf', 'sentences-id'), { id: 'sentence-pdf', deleted: true });
+        await assert.rejects(deleteDriveFile('unrelated-zip', 'sentences-id'), (error) => error.code === 'DRIVE_FILE_NOT_FOUND');
         assert.ok(driveUrls.every((url) => url.searchParams.get('supportsAllDrives') === 'true'));
         assert.ok(driveUrls.every((url) => url.searchParams.get('includeItemsFromAllDrives') === 'true'));
         assert.ok(driveUrls.every((url) => url.searchParams.get('driveId') === 'test-shared-drive'));
@@ -332,6 +387,10 @@ test('Drive image upload validates topic ancestry and writes file bytes to that 
 
     try {
         const fileBytes = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x00, 0x01]);
+        await assert.rejects(
+            uploadTopicFile('topic-id', 'subject-id', 'chart.pdf', 'image/webp', fileBytes),
+            (error) => error.code === 'UNSUPPORTED_FILE_TYPE'
+        );
         const uploaded = await uploadTopicFile('topic-id', 'subject-id', 'chart.webp', 'image/webp', fileBytes);
         assert.equal(uploaded.id, 'uploaded-image');
         assert.equal(uploaded.type, 'image');
@@ -445,24 +504,52 @@ test('Google OAuth URL carries a single-encoded Drive scope and state value', as
     assert.equal(authUrl.searchParams.get('access_type'), 'offline');
 });
 
+test('OAuth exchange maps invalid_grant without exposing provider details', async () => {
+    const originalGetToken = google.auth.OAuth2.prototype.getToken;
+    process.env.GOOGLE_CLIENT_ID = 'google-client-id';
+    process.env.GOOGLE_CLIENT_SECRET = 'google-client-secret';
+    process.env.GOOGLE_REDIRECT_URI = 'http://localhost:8787/api/drive/oauth2callback';
+    google.auth.OAuth2.prototype.getToken = async () => {
+        const error = new Error('provider response');
+        error.response = { status: 400, data: { error: 'invalid_grant', error_description: 'sensitive provider message' } };
+        throw error;
+    };
+
+    try {
+        await assert.rejects(exchangeGoogleDriveCode('revoked-code'), (error) => {
+            assert.equal(error.code, 'DRIVE_AUTH_REVOKED');
+            assert.equal(error.diagnostics.oauthError, 'invalid_grant');
+            assert.doesNotMatch(error.message, /sensitive provider message/);
+            return true;
+        });
+    } finally {
+        google.auth.OAuth2.prototype.getToken = originalGetToken;
+        process.env.GOOGLE_CLIENT_ID = '';
+        process.env.GOOGLE_CLIENT_SECRET = '';
+        process.env.GOOGLE_REDIRECT_URI = '';
+    }
+});
+
 test('OAuth exchange persists tokens as encrypted server-side data', async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), 'drive-oauth-test-'));
     const tokenFilePath = path.join(directory, 'token.enc');
-    const originalFetch = globalThis.fetch;
+    const originalGetToken = google.auth.OAuth2.prototype.getToken;
     process.env.GOOGLE_CLIENT_ID = 'google-client-id';
     process.env.GOOGLE_CLIENT_SECRET = 'google-client-secret';
     process.env.GOOGLE_REDIRECT_URI = 'http://localhost:8787/api/drive/oauth2callback';
     process.env.GOOGLE_DRIVE_TOKEN_FILE = tokenFilePath;
     delete process.env.GOOGLE_DRIVE_TOKEN;
-    globalThis.fetch = async (_url, options) => {
-        assert.equal(new URLSearchParams(options.body).get('grant_type'), 'authorization_code');
-        return new Response(JSON.stringify({
-            access_token: 'access-secret-for-test',
-            refresh_token: 'refresh-secret-for-test',
-            expires_in: 3600,
-            scope: 'https://www.googleapis.com/auth/drive',
-            token_type: 'Bearer'
-        }), { status: 200 });
+    google.auth.OAuth2.prototype.getToken = async (code) => {
+        assert.equal(code, 'test-code');
+        return {
+            tokens: {
+                access_token: 'access-secret-for-test',
+                refresh_token: 'refresh-secret-for-test',
+                expires_in: 3600,
+                scope: 'https://www.googleapis.com/auth/drive',
+                token_type: 'Bearer'
+            }
+        };
     };
 
     try {
@@ -471,7 +558,7 @@ test('OAuth exchange persists tokens as encrypted server-side data', async () =>
         assert.doesNotMatch(persisted, /access-secret-for-test|refresh-secret-for-test/);
         assert.deepEqual(Object.keys(JSON.parse(persisted)).sort(), ['data', 'iv', 'tag']);
     } finally {
-        globalThis.fetch = originalFetch;
+        google.auth.OAuth2.prototype.getToken = originalGetToken;
         await clearGoogleDriveToken();
         delete process.env.GOOGLE_DRIVE_TOKEN_FILE;
         await rm(directory, { recursive: true, force: true });

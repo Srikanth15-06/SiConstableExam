@@ -1,5 +1,6 @@
 import { getProviderConfig, sanitizeApiError } from './provider-manager.mjs';
 import { randomUUID } from 'node:crypto';
+import { validateGoogleDriveConfig } from './google-drive-service.mjs';
 
 const providerKeyCooldowns = new Map();
 const KEY_COOLDOWN_MS = 60_000;
@@ -325,6 +326,7 @@ export async function getAiStatus() {
     const gemini = getProviderConfig('gemini');
     const groq = getProviderConfig('groq');
     const openrouter = getProviderConfig('openrouter');
+    const drive = validateGoogleDriveConfig();
     return {
         gemini: {
             available: gemini.apiKeys.length > 0 && gemini.models.length > 0,
@@ -342,13 +344,9 @@ export async function getAiStatus() {
             configuredModels: openrouter.modelsConfigured
         },
         googleDrive: {
-            available: Boolean(
-                process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID
-                && process.env.GOOGLE_CLIENT_ID
-                && process.env.GOOGLE_CLIENT_SECRET
-                && process.env.GOOGLE_REDIRECT_URI
-                && process.env.GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY
-            )
+            configured: drive.configured,
+            adminAuthConfigured: drive.adminAuthConfigured,
+            available: drive.configured && drive.adminAuthConfigured
         }
     };
 }
