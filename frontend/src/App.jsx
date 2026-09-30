@@ -1,13 +1,13 @@
 import React, { useState, useEffect, useMemo, useEffectEvent, useRef } from 'react';
 import {
-  BookOpen, Folder, FolderPlus, Upload, Download, FileText, Target, Clock, ChevronRight, BarChart2, User, Sparkles,
-  ArrowLeft, Send, ShieldAlert, Play, X, Maximize2, Minimize2, Brain, Lock, Unlock, RotateCcw, Code, LogOut, Mail, KeyRound, UserPlus, RefreshCw, Trash2,
+  BookOpen, Folder, Download, FileText, Target, Clock, ChevronRight, BarChart2, User, Sparkles,
+  ArrowLeft, Send, ShieldAlert, Play, X, Maximize2, Minimize2, Brain, Lock, Unlock, RotateCcw, Code, LogOut, Mail, KeyRound, UserPlus, RefreshCw,
   Volume2, VolumeX, CalendarDays
 } from 'lucide-react';
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell
 } from 'recharts';
-import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, provisionDriveFolders, uploadDriveFile, getDriveAuthUrl, checkDriveConnection, disconnectDrive, deleteDriveFile, getDriveFileContentUrl, logoutDriveAdmin, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, createTestAttempt, submitTestAttempt, saveTestAnswers } from './services/aiService.js';
+import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, checkDriveConnection, getDriveFileContentUrl, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, createTestAttempt, submitTestAttempt, saveTestAnswers } from './services/aiService.js';
 import { normalizeAnswer } from './test-results.js';
 import { LEGACY_MEMBERS_STORAGE_KEY, readLegacyMembers, removeImportedLegacyMember } from './legacy-import.js';
 import { SUBJECT_TOPICS } from './syllabus.js';
@@ -319,19 +319,12 @@ export default function App() {
   const [isDriveNotesLoading, setIsDriveNotesLoading] = useState(false);
   const initialDriveQueryState = useMemo(() => getDriveQueryState(), []);
   const [driveNotesError, setDriveNotesError] = useState(() => initialDriveQueryState?.notesError ?? '');
-  const [isDriveProvisioning, setIsDriveProvisioning] = useState(false);
-  const [driveProvisionMessage, setDriveProvisionMessage] = useState(() => initialDriveQueryState?.provisionMessage ?? '');
-  const [isDriveUploading, setIsDriveUploading] = useState(false);
-  const [driveUploadMessage, setDriveUploadMessage] = useState('');
   const [isGoogleDriveConnected, setIsGoogleDriveConnected] = useState(() => initialDriveQueryState?.connected ?? false);
   const [driveConnectionStatus, setDriveConnectionStatus] = useState(() => initialDriveQueryState?.connectionStatus ?? 'checking');
   const [driveDiagnostics, setDriveDiagnostics] = useState(() => initialDriveQueryState?.diagnostics ?? null);
-  const [isDriveAdminAuthorized, setIsDriveAdminAuthorized] = useState(false);
-  const [driveDeletingFileId, setDriveDeletingFileId] = useState('');
   const [drivePreviewFile, setDrivePreviewFile] = useState(null);
   const [isDrivePreviewFullscreen, setIsDrivePreviewFullscreen] = useState(false);
   const driveRequestSequenceRef = useRef(0);
-  const driveUploadInputRef = useRef(null);
   const drivePreviewContainerRef = useRef(null);
   const notesDoubtLogRef = useRef(null);
   const answerSaveTimerRef = useRef(null);
@@ -377,7 +370,6 @@ export default function App() {
         setIsGoogleDriveConnected(Boolean(status.connected));
         setDriveConnectionStatus(status.available ? 'connected' : status.connected ? 'error' : status.code && !['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED'].includes(status.code) ? 'error' : 'not-connected');
         setDriveDiagnostics(status);
-        setIsDriveAdminAuthorized(Boolean(status.adminAuthorized));
       } catch {
         setIsGoogleDriveConnected(false);
         setDriveConnectionStatus('error');
@@ -437,8 +429,6 @@ export default function App() {
     setDriveBreadcrumbs([]);
     setDriveCurrentSubject('');
     setDriveCurrentTopic('');
-    setDriveProvisionMessage('');
-    setDriveUploadMessage('');
     setDrivePreviewFile(null);
     setPlannerData(createEmptyPlannerState());
     setLegacyArchive(null);
@@ -851,10 +841,6 @@ export default function App() {
 
   const handleOpenDriveLibrary = async () => {
     setCurrentView('drive-notes');
-    if (!isGoogleDriveConnected) {
-      setDriveNotesError('Connect your Google account to open the Notes Library.');
-      return;
-    }
     const requestSequence = ++driveRequestSequenceRef.current;
     setIsDriveNotesLoading(true);
     setDriveNotesError('');
@@ -865,8 +851,6 @@ export default function App() {
     setDriveBreadcrumbs([]);
     setDriveCurrentSubject('');
     setDriveCurrentTopic('');
-    setDriveProvisionMessage('');
-    setDriveUploadMessage('');
     try {
       const status = await getDriveStatus();
       if (requestSequence !== driveRequestSequenceRef.current) return;
@@ -892,8 +876,6 @@ export default function App() {
     setDriveNotesError('');
     setDriveCurrentFolders([]);
     setDriveCurrentFiles([]);
-    setDriveProvisionMessage('');
-    setDriveUploadMessage('');
     try {
       const result = await getDriveTopicFiles({
         exam: normalizeExamForRequest(selectedExam),
@@ -936,10 +918,12 @@ export default function App() {
       const status = await checkDriveConnection();
       setDriveDiagnostics(status);
       setIsGoogleDriveConnected(Boolean(status.connected));
-      setIsDriveAdminAuthorized(Boolean(status.adminAuthorized));
       setDriveConnectionStatus(status.available ? 'connected' : status.connected ? 'error' : status.code && !['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED'].includes(status.code) ? 'error' : 'not-connected');
       if (!status.available || !status.rootFolderId) {
-        setDriveNotesError(status.message || 'Google Drive is not available right now.');
+        const sharedLibraryMessage = ['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED', 'DRIVE_AUTH_REVOKED'].includes(status.code)
+          ? 'The shared Notes Library is currently unavailable.'
+          : status.message || 'Google Drive is not available right now.';
+        setDriveNotesError(sharedLibraryMessage);
         return;
       }
       const folderId = driveCurrentFolderId || status.rootFolderId;
@@ -952,67 +936,7 @@ export default function App() {
     }
   };
 
-  const handleDriveAdminLogout = async () => {
-    try {
-      await logoutDriveAdmin();
-      setIsDriveAdminAuthorized(false);
-      setDriveNotesError('Administrator session ended.');
-    } catch (error) {
-      setDriveNotesError(error.message || 'Administrator session could not be closed.');
-    }
-  };
-
-  const handleConnectGoogleDrive = async () => {
-    if (!isDriveAdminAuthorized) {
-      setCurrentView('drive-notes');
-      setDriveNotesError('Administrator access is required to connect Google Drive.');
-      return;
-    }
-    try {
-      const authUrl = await getDriveAuthUrl();
-      window.location.href = authUrl;
-    } catch (error) {
-      setDriveNotesError(error.message || 'Google Drive connection could not be started.');
-    }
-  };
-
-  const handleDisconnectGoogleDrive = async () => {
-    try {
-      await disconnectDrive();
-      setIsGoogleDriveConnected(false);
-      setDriveConnectionStatus('not-connected');
-      setDriveDiagnostics({ connected: false, available: false, message: 'Google Drive is disconnected.' });
-      setDriveRootFolderId('');
-      setDriveCurrentFolderId('');
-      setDriveCurrentFolders([]);
-      setDriveCurrentFiles([]);
-      setDriveBreadcrumbs([]);
-      setDriveCurrentSubject('');
-      setDriveCurrentTopic('');
-      setDriveNotesError('Google Drive disconnected.');
-    } catch (error) {
-      setDriveNotesError(error.message || 'Google Drive disconnect failed.');
-    }
-  };
-
-  const handleDeleteDriveFile = async (file) => {
-    if (!driveCurrentFolderId || !window.confirm(`Delete "${file.name}" from Google Drive?`)) return;
-    setDriveDeletingFileId(file.id);
-    setDriveNotesError('');
-    setDriveUploadMessage('');
-    try {
-      await deleteDriveFile(file.id, driveCurrentFolderId);
-      setDriveUploadMessage(`${file.name} deleted.`);
-      await loadDriveFolder(driveCurrentFolderId, driveBreadcrumbs);
-    } catch (error) {
-      setDriveNotesError(error.message || 'Google Drive file could not be deleted.');
-    } finally {
-      setDriveDeletingFileId('');
-    }
-  };
-
   const handleOpenDriveFolder = (folder) => {
-    setDriveUploadMessage('');
     const nextBreadcrumbs = [...driveBreadcrumbs, { id: folder.id, name: folder.name }];
     if (driveBreadcrumbs.length === 1) {
       setDriveCurrentSubject(folder.name);
@@ -1024,7 +948,6 @@ export default function App() {
   };
 
   const handleDriveBreadcrumbClick = (index) => {
-    setDriveUploadMessage('');
     const nextBreadcrumbs = driveBreadcrumbs.slice(0, index + 1);
     setDriveCurrentSubject(nextBreadcrumbs[1]?.name || '');
     setDriveCurrentTopic(nextBreadcrumbs[2]?.name || '');
@@ -1036,54 +959,6 @@ export default function App() {
       handleDriveBreadcrumbClick(driveBreadcrumbs.length - 2);
     } else {
       setCurrentView('dashboard');
-    }
-  };
-
-  const handleProvisionDriveFolders = async () => {
-    if (!driveRootFolderId || isDriveProvisioning) return;
-    setIsDriveProvisioning(true);
-    setDriveProvisionMessage('');
-    setDriveNotesError('');
-    try {
-      const subjects = Object.entries(SUBJECT_TOPICS).map(([name, topics]) => ({ name, topics }));
-      const result = await provisionDriveFolders(subjects);
-      setDriveProvisionMessage(`Folder setup complete. Created ${result.createdSubjects} subjects and ${result.createdTopics} topics; existing folders were kept.`);
-      await loadDriveFolder(driveRootFolderId, [{ id: driveRootFolderId, name: 'Subjects' }]);
-    } catch (error) {
-      setDriveNotesError(error.message || 'Google Drive folder setup failed.');
-    } finally {
-      setIsDriveProvisioning(false);
-    }
-  };
-
-  const handleDriveFileSelected = async (event) => {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-    if (file.size > 20 * 1024 * 1024) {
-      setDriveNotesError('Files must be 20 MB or smaller.');
-      return;
-    }
-    if (!/\.(pdf|doc|docx|ppt|pptx|xls|xlsx|txt|png|jpe?g|webp)$/i.test(file.name)) {
-      setDriveNotesError('Upload PDF, DOC/DOCX, PPT/PPTX, XLS/XLSX, TXT, PNG, JPG/JPEG, or WebP files only.');
-      return;
-    }
-    if (driveBreadcrumbs.length !== 3 || !driveCurrentFolderId || !driveBreadcrumbs[1]?.id) {
-      setDriveNotesError('Choose a subject and topic folder before uploading.');
-      return;
-    }
-
-    setIsDriveUploading(true);
-    setDriveUploadMessage('');
-    setDriveNotesError('');
-    try {
-      const uploadedFile = await uploadDriveFile(driveCurrentFolderId, driveBreadcrumbs[1].id, file);
-      setDriveUploadMessage(`${uploadedFile.name} uploaded.`);
-      await loadDriveFolder(driveCurrentFolderId, driveBreadcrumbs);
-    } catch (error) {
-      setDriveNotesError(error.message || 'Google Drive upload failed.');
-    } finally {
-      setIsDriveUploading(false);
     }
   };
 
@@ -1672,17 +1547,10 @@ export default function App() {
                 </span>
               </div>
               <button
-                onClick={() => {
-                  if (!isDriveAdminAuthorized) {
-                    setCurrentView('drive-notes');
-                    return;
-                  }
-                  if (isGoogleDriveConnected) handleDisconnectGoogleDrive();
-                  else handleConnectGoogleDrive();
-                }}
+                onClick={() => { void handleOpenDriveLibrary(); }}
                 className="mt-2 w-full rounded-lg border border-teal-500/40 bg-slate-800 px-2.5 py-1.5 text-[11px] font-semibold text-teal-200 hover:bg-slate-700"
               >
-                {!isDriveAdminAuthorized ? 'Open Notes Library' : isGoogleDriveConnected ? 'Disconnect Google Drive' : 'Connect Google Drive'}
+                Open Notes Library
               </button>
             </div>
           </div>
@@ -2858,20 +2726,6 @@ export default function App() {
                   {(driveCurrentSubject || driveCurrentTopic) && <p className="mt-1 text-sm text-slate-400">{[driveCurrentSubject, driveCurrentTopic].filter(Boolean).join(' / ')}</p>}
                 </div>
                 <div className="flex flex-wrap items-center gap-2">
-                  {isDriveAdminAuthorized && (isGoogleDriveConnected ? (
-                    <button onClick={handleDisconnectGoogleDrive} className="rounded-lg border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 hover:bg-slate-800">
-                      Disconnect Google Drive
-                    </button>
-                  ) : (
-                    <button onClick={handleConnectGoogleDrive} className="rounded-lg bg-teal-600 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-500">
-                      Connect Google Drive
-                    </button>
-                  ))}
-                  {isDriveAdminAuthorized && (
-                    <button onClick={handleDriveAdminLogout} aria-label="End administrator session" title="Lock Drive management" className="rounded-lg border border-slate-700 p-2 text-slate-300 hover:bg-slate-800">
-                      <Lock className="h-4 w-4" />
-                    </button>
-                  )}
                   <button
                     onClick={handleRefreshDrive}
                     disabled={isDriveNotesLoading}
@@ -2910,7 +2764,6 @@ export default function App() {
                     message: driveDiagnostics?.message || null,
                     code: driveDiagnostics?.code || null,
                     configured: driveDiagnostics?.configured ?? null,
-                    adminAuthConfigured: driveDiagnostics?.adminAuthConfigured ?? null,
                     checks: driveDiagnostics?.checks || null,
                     tokenStorage: driveDiagnostics?.tokenStorage || null,
                     diagnostics: driveDiagnostics?.diagnostics || null
@@ -2932,34 +2785,6 @@ export default function App() {
                   </div>
                 ))}
               </nav>
-
-              <div className="flex flex-wrap items-center gap-3">
-                {isDriveAdminAuthorized && driveBreadcrumbs.length === 1 && driveCurrentFolderId === driveRootFolderId && (
-                  <button onClick={handleProvisionDriveFolders} disabled={isDriveProvisioning || isDriveNotesLoading} className="flex items-center gap-2 rounded-lg border border-teal-500/40 bg-teal-600/15 px-3 py-2 text-xs font-semibold text-teal-200 hover:bg-teal-600/25 disabled:opacity-50">
-                    <FolderPlus className="h-4 w-4" />
-                    {isDriveProvisioning ? 'Creating missing folders...' : 'Create missing syllabus folders'}
-                  </button>
-                )}
-                {isDriveAdminAuthorized && driveBreadcrumbs.length === 3 && (
-                  <>
-                    <input
-                      ref={driveUploadInputRef}
-                      type="file"
-                      accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.png,.jpg,.jpeg,.webp"
-                      className="hidden"
-                      onChange={handleDriveFileSelected}
-                    />
-                    <button onClick={() => driveUploadInputRef.current?.click()} disabled={isDriveUploading || isDriveNotesLoading} className="flex items-center gap-2 rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white hover:bg-blue-500 disabled:opacity-50">
-                      <Upload className="h-4 w-4" />
-                      {isDriveUploading ? 'Uploading...' : 'Upload note or image'}
-                    </button>
-                    <span className="text-xs text-slate-500">PDF, DOC/DOCX, TXT, PNG, JPG, WebP · up to 20 MB</span>
-                  </>
-                )}
-              </div>
-
-              {driveProvisionMessage && <p role="status" className="text-xs text-teal-200">{driveProvisionMessage}</p>}
-              {driveUploadMessage && <p role="status" className="text-xs text-teal-200">{driveUploadMessage}</p>}
 
               {isDriveNotesLoading && <p role="status" className="text-sm text-slate-300">Loading notes...</p>}
               {driveNotesError && (
@@ -3008,16 +2833,6 @@ export default function App() {
                             </span>
                             <span className="shrink-0 text-xs font-semibold text-teal-300">View</span>
                           </button>
-                          {isDriveAdminAuthorized && <button
-                            type="button"
-                            onClick={() => handleDeleteDriveFile(file)}
-                            disabled={Boolean(driveDeletingFileId)}
-                            aria-label={`Delete ${file.name}`}
-                            title="Delete file"
-                            className="rounded-md p-2 text-slate-400 hover:bg-rose-500/10 hover:text-rose-300 disabled:opacity-40"
-                          >
-                            {driveDeletingFileId === file.id ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
-                          </button>}
                         </article>
                       );
                     })}
