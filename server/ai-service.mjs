@@ -5,6 +5,9 @@ import { validateGoogleDriveConfig } from './google-drive-service.mjs';
 const providerKeyCooldowns = new Map();
 const KEY_COOLDOWN_MS = 60_000;
 const MAX_QUESTION_BATCHES = 4;
+const PROVIDER_REQUEST_TIMEOUT_MS = 15_000;
+const PROVIDER_POOL_TIMEOUT_MS = 60_000;
+const MAX_PROVIDER_ATTEMPTS = 12;
 
 export class AIProviderError extends Error {
     constructor(provider, code, message, diagnostics = {}) {
@@ -81,19 +84,25 @@ function providerFailure(provider, failures) {
     });
 }
 
-async function requestProviderPool(provider, config, sendRequest, parseResponse) {
+async function requestProviderPool(provider, config, sendRequest, parseResponse, operationDeadline = Date.now() + PROVIDER_POOL_TIMEOUT_MS) {
     if (!config.apiKeyEntries?.length || !config.models.length) {
         throw new AIProviderError(provider, 'NOT_CONFIGURED', `${provider} has no configured API keys or models.`);
     }
 
     const failures = [];
+    const deadline = Math.min(Date.now() + PROVIDER_POOL_TIMEOUT_MS, operationDeadline);
+    let attemptCount = 0;
     for (const { index: keyIndex, key } of config.apiKeyEntries) {
+        if (attemptCount >= MAX_PROVIDER_ATTEMPTS || Date.now() >= deadline) break;
         const cooldownKey = `${provider}:${keyIndex}`;
         if ((providerKeyCooldowns.get(cooldownKey) || 0) > Date.now()) continue;
 
         for (const model of config.models) {
+            if (attemptCount >= MAX_PROVIDER_ATTEMPTS || Date.now() >= deadline) break;
+            attemptCount += 1;
             try {
-                const response = await sendRequest(key, model);
+                const timeoutMs = Math.max(1, Math.min(PROVIDER_REQUEST_TIMEOUT_MS, deadline - Date.now()));
+                const response = await sendRequest(key, model, AbortSignal.timeout(timeoutMs));
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok) {
                     const reason = sanitizeApiError(data?.error?.message || response.statusText || 'Provider request failed.');
@@ -163,9 +172,8 @@ function isQuestionValid(question, request) {
     return true;
 }
 
-async function callGeminiQuestionGeneration(payload) {
-    const config = getProviderConfig('gemini');
-    const prompt = `
+function questionGenerationPrompt(payload) {
+    return `
 You are a strict exam question generator. Generate exactly ${payload.count} questions and return only JSON.
 The complete required context is:
 Exam: ${payload.exam}
@@ -178,9 +186,15 @@ Set subject, topic, and difficulty metadata to the exact requested values above.
 Attempt seed: ${payload.attemptSeed}.
 Do not repeat these questions: ${JSON.stringify(payload.previousQuestionSignatures)}
 `;
+}
 
-    const result = await requestProviderPool('Gemini', config, (key, model) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`, {
+async function callGeminiQuestionGeneration(payload, operationDeadline) {
+    const config = getProviderConfig('gemini');
+    const prompt = questionGenerationPrompt(payload);
+
+    const result = await requestProviderPool('Gemini', config, (key, model, signal) => fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`, {
         method: 'POST',
+        signal,
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
             contents: [{ parts: [{ text: prompt }] }],
@@ -190,8 +204,56 @@ Do not repeat these questions: ${JSON.stringify(payload.previousQuestionSignatur
         const text = data?.candidates?.[0]?.content?.parts?.map((part) => part.text).join('') || '';
         const json = parseJsonLike(text);
         return json && Array.isArray(json.questions) ? json.questions : null;
-    });
+    }, operationDeadline);
     return { questions: result.value, model: result.model, keyIndex: result.keyIndex };
+}
+
+async function callOpenAIQuestionGeneration(providerName, payload, operationDeadline) {
+    const config = getProviderConfig(providerName);
+    const displayName = providerName === 'groq' ? 'Groq' : 'OpenRouter';
+    const endpoint = providerName === 'groq'
+        ? 'https://api.groq.com/openai/v1/chat/completions'
+        : 'https://openrouter.ai/api/v1/chat/completions';
+    const prompt = questionGenerationPrompt(payload);
+    const result = await requestProviderPool(displayName, config, (key, model, signal) => fetch(endpoint, {
+        method: 'POST',
+        signal,
+        headers: {
+            'Authorization': `Bearer ${key}`,
+            'Content-Type': 'application/json',
+            ...(providerName === 'openrouter' ? {
+                'HTTP-Referer': process.env.OPENROUTER_SITE_URL || process.env.FRONTEND_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:5173',
+                'X-Title': 'TS Police AI Prep'
+            } : {})
+        },
+        body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content: prompt }],
+            response_format: { type: 'json_object' }
+        })
+    }), (data) => {
+        const json = parseJsonLike(data?.choices?.[0]?.message?.content || '');
+        return json && Array.isArray(json.questions) ? json.questions : null;
+    }, operationDeadline);
+    return { questions: result.value, model: result.model, keyIndex: result.keyIndex };
+}
+
+async function callQuestionGenerationProvider(payload, operationDeadline) {
+    const failures = [];
+    for (const [provider, call] of [
+        ['Gemini', (request) => callGeminiQuestionGeneration(request, operationDeadline)],
+        ['Groq', (request) => callOpenAIQuestionGeneration('groq', request, operationDeadline)],
+        ['OpenRouter', (request) => callOpenAIQuestionGeneration('openrouter', request, operationDeadline)]
+    ]) {
+        try {
+            return await call(payload);
+        } catch (error) {
+            failures.push({ provider, code: error.code || 'PROVIDER_FAILED', reason: sanitizeApiError(error.message) });
+        }
+    }
+    throw new AIProviderError('ai', 'ALL_PROVIDERS_FAILED', 'All configured AI providers were unable to generate questions. Please try again later.', {
+        providers: failures
+    });
 }
 
 export async function generateQuestions(payload) {
@@ -209,14 +271,15 @@ export async function generateQuestions(payload) {
     const seen = new Set((Array.isArray(payload.previousQuestionSignatures) ? payload.previousQuestionSignatures : []).map(normalizeText));
     const usedIds = new Set();
     let lastProviderResult;
+    const operationDeadline = Date.now() + 90_000;
 
-    for (let batch = 0; batch < MAX_QUESTION_BATCHES && valid.length < count; batch += 1) {
+    for (let batch = 0; batch < MAX_QUESTION_BATCHES && valid.length < count && Date.now() < operationDeadline; batch += 1) {
         const remaining = count - valid.length;
-        lastProviderResult = await callGeminiQuestionGeneration({
+        lastProviderResult = await callQuestionGenerationProvider({
             ...request,
             count: remaining,
             previousQuestionSignatures: [...seen].slice(-40)
-        });
+        }, operationDeadline);
         for (const question of lastProviderResult.questions) {
             const signature = questionSignature(question);
             if (!signature || seen.has(signature)) continue;
@@ -224,7 +287,7 @@ export async function generateQuestions(payload) {
             const normalizedQuestion = normalizeQuestionAnswer(question);
             if (!normalizedQuestion || !isQuestionValid(normalizedQuestion, request)) continue;
             let questionId = String(normalizedQuestion.id || '').trim();
-            if (!questionId || usedIds.has(questionId)) questionId = `gemini_${request.attemptSeed}_${randomUUID()}`;
+            if (!questionId || usedIds.has(questionId)) questionId = `question_${request.attemptSeed}_${randomUUID()}`;
             usedIds.add(questionId);
             valid.push({
                 ...normalizedQuestion,
@@ -252,7 +315,6 @@ export async function generateQuestions(payload) {
 
 export async function generateNotes(payload) {
     const context = requestContext(payload);
-    const config = getProviderConfig('groq');
     const prompt = `
 You create study notes for competitive exam preparation. Return only one JSON object with exactly these fields:
 {"title":"...","exam":"${context.exam}","subject":"${context.subject}","topic":"${context.topic}","overview":"...","concepts":["..."],"rules":["..."],"formulas":["..."],"examples":["..."],"shortcuts":["..."],"commonMistakes":["..."],"examTips":["..."],"quickRevision":["..."]}
@@ -263,38 +325,76 @@ Topic: ${context.topic}
 Difficulty: ${context.difficulty}
 Every explanation, rule, formula, and example must match this exact subject and topic. Do not discuss unrelated topics or another subject. Every list must contain useful strings. No markdown or text outside JSON.
 `;
-    const result = await requestProviderPool('Groq', config, (key, model) => fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], response_format: { type: 'json_object' } })
-    }), (data) => {
+    const parseNotes = (data) => {
         const json = parseJsonLike(data?.choices?.[0]?.message?.content || '');
-        if (!json || json.exam !== context.exam || json.subject !== context.subject || json.topic !== context.topic) return null;
+        const geminiText = data?.candidates?.[0]?.content?.parts?.map((part) => part.text).join('') || '';
+        const normalizedJson = json || parseJsonLike(geminiText);
+        if (!normalizedJson || normalizedJson.exam !== context.exam || normalizedJson.subject !== context.subject || normalizedJson.topic !== context.topic) return null;
         const asList = (value) => (Array.isArray(value) ? value : []).map((item) => String(item).trim()).filter(Boolean);
         const notes = {
-            title: String(json.title || '').trim(),
+            title: String(normalizedJson.title || '').trim(),
             exam: context.exam,
             subject: context.subject,
             topic: context.topic,
-            overview: String(json.overview || '').trim(),
-            concepts: asList(json.concepts),
-            rules: asList(json.rules),
-            formulas: asList(json.formulas),
-            examples: asList(json.examples),
-            shortcuts: asList(json.shortcuts),
-            commonMistakes: asList(json.commonMistakes),
-            examTips: asList(json.examTips),
-            quickRevision: asList(json.quickRevision)
+            overview: String(normalizedJson.overview || '').trim(),
+            concepts: asList(normalizedJson.concepts),
+            rules: asList(normalizedJson.rules),
+            formulas: asList(normalizedJson.formulas),
+            examples: asList(normalizedJson.examples),
+            shortcuts: asList(normalizedJson.shortcuts),
+            commonMistakes: asList(normalizedJson.commonMistakes),
+            examTips: asList(normalizedJson.examTips),
+            quickRevision: asList(normalizedJson.quickRevision)
         };
         const arrays = Object.entries(notes).filter(([, value]) => Array.isArray(value)).map(([, value]) => value);
         return notes.title && notes.overview && arrays.every((items) => items.length > 0) ? notes : null;
-    });
-    return result.value;
+    };
+    const failures = [];
+    const operationDeadline = Date.now() + PROVIDER_POOL_TIMEOUT_MS;
+    for (const providerName of ['groq', 'openrouter', 'gemini']) {
+        const displayName = providerName === 'openrouter' ? 'OpenRouter' : providerName[0].toUpperCase() + providerName.slice(1);
+        const config = getProviderConfig(providerName);
+        try {
+            const result = await requestProviderPool(displayName, config, (key, model, signal) => {
+                if (providerName === 'gemini') {
+                    return fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`, {
+                        method: 'POST',
+                        signal,
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            systemInstruction: { parts: [{ text: 'Return valid JSON only. Do not add markdown.' }] },
+                            contents: [{ parts: [{ text: prompt }] }],
+                            generationConfig: { responseMimeType: 'application/json', temperature: 0.3 }
+                        })
+                    });
+                }
+                const endpoint = providerName === 'groq'
+                    ? 'https://api.groq.com/openai/v1/chat/completions'
+                    : 'https://openrouter.ai/api/v1/chat/completions';
+                return fetch(endpoint, {
+                    method: 'POST',
+                    signal,
+                    headers: {
+                        'Authorization': `Bearer ${key}`,
+                        'Content-Type': 'application/json',
+                        ...(providerName === 'openrouter' ? {
+                            'HTTP-Referer': process.env.OPENROUTER_SITE_URL || process.env.FRONTEND_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:5173',
+                            'X-Title': 'TS Police AI Prep'
+                        } : {})
+                    },
+                    body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], response_format: { type: 'json_object' } })
+                });
+            }, parseNotes, operationDeadline);
+            return result.value;
+        } catch (error) {
+            failures.push({ provider: displayName, code: error.code || 'PROVIDER_FAILED', reason: sanitizeApiError(error.message) });
+        }
+    }
+    throw new AIProviderError('ai', 'ALL_PROVIDERS_FAILED', 'Configured AI providers could not create valid study notes. Please try again later.', { providers: failures });
 }
 
 export async function generateChatReply(payload) {
     const context = requestContext(payload);
-    const config = getProviderConfig('openrouter');
     const inputMessages = Array.isArray(payload?.messages) ? payload.messages : [];
     const messages = inputMessages
         .filter((message) => ['user', 'assistant'].includes(message?.role) && typeof message.content === 'string')
@@ -306,20 +406,57 @@ export async function generateChatReply(payload) {
 
     const syllabusReference = formatChatSyllabus(payload?.syllabus);
     const contextPrompt = `You are an expert tutor for the full TS Police Sub-Inspector and Constable exam syllabus. Support Arithmetic and Quantitative Aptitude, Reasoning, General Studies, Telangana GK, and English. The configured study topics are:\n${syllabusReference || 'Arithmetic, Reasoning, General Studies, Telangana GK, and English.'}\nTreat this as the app's topic catalog: when asked to outline this app's syllabus, organize these configured topics by subject and do not add topics as if they were in this catalog. The current study focus is Exam: ${context.exam}; Subject: ${context.subject}; Topic: ${context.topic}; Difficulty: ${context.difficulty}. Use that focus only when the question is ambiguous. If the user asks about a different syllabus subject or topic, answer that question directly instead of refusing or forcing it back to the selected focus. Explain concepts clearly, show steps and calculations for numerical problems, and use concise examples or shortcuts where helpful. For requests to explain the SI or Constable syllabus, note that the latest official recruitment notification is authoritative for exam-specific differences. Stay within TS Police exam preparation; if a request is unrelated, politely redirect. Do not claim access to notes, official questions, or facts not provided in the conversation. If an earlier assistant reply incorrectly limited help to one subject, correct it and answer the user's current question.`;
-    const result = await requestProviderPool('OpenRouter', config, (key, model) => fetch('https://openrouter.ai/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-            'Authorization': `Bearer ${key}`,
-            'Content-Type': 'application/json',
-            'HTTP-Referer': process.env.OPENROUTER_SITE_URL || process.env.FRONTEND_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:5173',
-            'X-Title': 'TS Police AI Prep'
-        },
-        body: JSON.stringify({ model, max_tokens: 1024, messages: [{ role: 'system', content: contextPrompt }, ...messages] })
-    }), (data) => {
-        const text = data?.choices?.[0]?.message?.content;
-        return typeof text === 'string' && text.trim() ? text.trim() : null;
-    });
-    return result.value;
+    const failures = [];
+    const operationDeadline = Date.now() + PROVIDER_POOL_TIMEOUT_MS;
+    for (const providerName of ['openrouter', 'groq', 'gemini']) {
+        const displayName = providerName === 'openrouter' ? 'OpenRouter' : providerName[0].toUpperCase() + providerName.slice(1);
+        const config = getProviderConfig(providerName);
+        try {
+            const result = await requestProviderPool(displayName, config, (key, model, signal) => {
+                if (providerName === 'gemini') {
+                    const contents = messages.map(({ role, content }) => ({
+                        role: role === 'assistant' ? 'model' : 'user',
+                        parts: [{ text: content }]
+                    }));
+                    return fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(key)}`, {
+                        method: 'POST',
+                        signal,
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            systemInstruction: { parts: [{ text: contextPrompt }] },
+                            contents,
+                            generationConfig: { maxOutputTokens: 1024 }
+                        })
+                    });
+                }
+                const endpoint = providerName === 'groq'
+                    ? 'https://api.groq.com/openai/v1/chat/completions'
+                    : 'https://openrouter.ai/api/v1/chat/completions';
+                return fetch(endpoint, {
+                    method: 'POST',
+                    signal,
+                    headers: {
+                        'Authorization': `Bearer ${key}`,
+                        'Content-Type': 'application/json',
+                        ...(providerName === 'openrouter' ? {
+                            'HTTP-Referer': process.env.OPENROUTER_SITE_URL || process.env.FRONTEND_URL || process.env.RENDER_EXTERNAL_URL || 'http://localhost:5173',
+                            'X-Title': 'TS Police AI Prep'
+                        } : {})
+                    },
+                    body: JSON.stringify({ model, max_tokens: 1024, messages: [{ role: 'system', content: contextPrompt }, ...messages] })
+                });
+            }, (data) => {
+                const text = providerName === 'gemini'
+                    ? data?.candidates?.[0]?.content?.parts?.map((part) => part.text).join('')
+                    : data?.choices?.[0]?.message?.content;
+                return typeof text === 'string' && text.trim() ? text.trim() : null;
+            }, operationDeadline);
+            return result.value;
+        } catch (error) {
+            failures.push({ provider: displayName, code: error.code || 'PROVIDER_FAILED', reason: sanitizeApiError(error.message) });
+        }
+    }
+    throw new AIProviderError('ai', 'ALL_PROVIDERS_FAILED', 'Configured AI providers could not answer this question. Please try again later.', { providers: failures });
 }
 
 export async function getAiStatus() {

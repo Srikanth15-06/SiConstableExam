@@ -1,14 +1,12 @@
 # Render Environment
 
-The production frontend and backend are separate services:
+Production uses separate Render Free services:
 
-- Frontend static site: `https://siconstableexam-1.onrender.com`
-- Backend web service: `https://siconstableexam.onrender.com`
-- Source repository/branch: `Srikanth15-06/SiConstableExam`, `main`
+- Frontend: `https://siconstableexam-1.onrender.com`
+- Backend: `https://siconstableexam.onrender.com`
+- Repository/branch: `Srikanth15-06/SiConstableExam`, `main`
 
 ## Frontend Static Site
-
-Configure the Render static site with:
 
 ```text
 Root Directory: frontend/
@@ -16,51 +14,47 @@ Build Command: npm install; npm run build
 Publish Directory: dist
 ```
 
-Add a **Rewrite** rule (not Redirect):
-
-```text
-Source:      /api/*
-Destination: https://siconstableexam.onrender.com/api/*
-```
-
-Leave `VITE_API_BASE_URL` unset so browser requests use the same-origin rewrite. Do not add backend secrets to this service. `VITE_API_PROXY_TARGET` is only for local Vite development.
+Add a **Rewrite** rule from `/api/*` to `https://siconstableexam.onrender.com/api/*`. Leave `VITE_API_BASE_URL` unset for this same-origin rewrite. Keep backend secrets out of the static service; `VITE_API_PROXY_TARGET` is only for local development.
 
 ## Backend Web Service
 
-Use the repository root and the existing Node service commands:
-
 ```text
-Root Directory: (blank / repository root)
-Build Command: npm install && npm --prefix frontend install && npm run build
+Root Directory: (repository root)
+Build Command: npm ci && npm --prefix frontend install && npm run build
 Start Command: node server/index.mjs
 ```
 
-Render provides `PORT`; the server listens on that value. Configure these variables on the backend service only:
+Render provides `PORT`. Configure these variables on the backend only:
 
-| Variable | Required value |
+| Variable | Purpose |
 | --- | --- |
-| `NODE_ENV` | `production` |
-| `SESSION_SECRET` | Long random signing key; required in production |
+| `NODE_ENV` | Set to `production` |
 | `FRONTEND_URL` | `https://siconstableexam-1.onrender.com` |
-| `FRONTEND_ORIGINS` | Optional comma-separated additional allowed origins; do not use `*` |
-| `GOOGLE_DRIVE_ADMIN_KEY` | Separate long random administrator key; entered at runtime in the Notes Library UI |
-| `GOOGLE_CLIENT_ID` | OAuth Web application client ID |
-| `GOOGLE_CLIENT_SECRET` | OAuth Web application client secret |
+| `SESSION_SECRET` | Long random server session/OAuth signing secret |
+| `SUPABASE_URL` | Supabase project URL |
+| `SUPABASE_SERVICE_ROLE_KEY` | Backend-only privileged key; never expose to Vite/browser |
+| `SUPABASE_ANON_KEY` | Optional project key; the browser does not use Supabase directly |
+| `FRONTEND_ORIGINS` | Optional additional exact origins; never use `*` |
+| `GEMINI_API_KEY_n` / `GEMINI_MODEL_n` | Optional AI provider configuration |
+| `GROQ_API_KEY_n` / `GROQ_MODEL_n` | Optional AI provider configuration |
+| `OPENROUTER_API_KEY_n` / `OPENROUTER_MODEL_n` | Optional AI provider configuration |
+
+Google Drive Notes is optional. If enabled, keep these backend-only variables:
+
+| Variable | Purpose |
+| --- | --- |
+| `GOOGLE_CLIENT_ID` | Existing OAuth client |
+| `GOOGLE_CLIENT_SECRET` | Existing OAuth client secret |
 | `GOOGLE_REDIRECT_URI` | `https://siconstableexam-1.onrender.com/api/drive/oauth2callback` |
-| `GOOGLE_DRIVE_ROOT_FOLDER_ID` | ID of the Notes Library root folder |
-| `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` | 32-byte base64 key or 64-character hex key |
-| `DATABASE_URL` | PostgreSQL connection URL for durable OAuth token storage |
-| `DATABASE_SSL` | Optional `true` if the database provider requires TLS |
-| `DATABASE_SSL_REJECT_UNAUTHORIZED` | Defaults to `true`; set `false` only if the provider documents an unverifiable certificate chain |
-| `GOOGLE_DRIVE_SHARED_DRIVE_ID` | Optional; not required for My Drive |
-| `GOOGLE_DRIVE_TOKEN_FILE` | Optional encrypted token file path on a persistent mount |
-| `GOOGLE_DRIVE_TOKEN_FILE_DURABLE` | Set `true` only for a custom path known to be persistent |
-| `GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON` | Optional service-account JSON used only for the encrypted token vault in the existing Drive root |
+| `GOOGLE_DRIVE_ROOT_FOLDER_ID` | Existing root `1rz_XI2AkAkQNfrsbKW9Rs78xSptWFJ1z` |
+| `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` | Encrypts the OAuth token stored in Supabase |
+| `GOOGLE_DRIVE_ADMIN_KEY` | Authorizes Notes Library management |
+| `GOOGLE_DRIVE_SHARED_DRIVE_ID` | Optional; not needed for the existing My Drive folder |
 
-Keep existing AI provider variables (`GEMINI_API_KEY_n` / `GEMINI_MODEL_n`, `GROQ_API_KEY_n` / `GROQ_MODEL_n`, and `OPENROUTER_API_KEY_n` / `OPENROUTER_MODEL_n`) unchanged. Render's `PORT` is managed by the platform; do not set `VITE_*` secrets.
+Do not configure `DATABASE_URL`, PostgreSQL services, Render disks, `GOOGLE_DRIVE_TOKEN_FILE`, or `GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON`. Do not put `SUPABASE_SERVICE_ROLE_KEY`, OAuth secrets, AI keys, or session secrets in any `VITE_*` variable.
 
-## Durable Storage
+## Supabase and Readiness
 
-The backend supports PostgreSQL and encrypts the OAuth token payload before writing it to `google_drive_oauth_tokens`. Configure a PostgreSQL service/provider and set `DATABASE_URL` to its private connection URL. PostgreSQL TLS certificate validation stays enabled by default. Alternatively, attach a persistent disk mounted at `/var/data` and set `GOOGLE_DRIVE_TOKEN_FILE=/var/data/google-drive-token.enc`; Render Free does not support persistent disks. On Render Free, set `GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON` to use an existing service account only for the reserved encrypted token file. The OAuth callback creates the file and grants that account file-level access; do not grant it access to the root folder. OAuth remains the Notes Library identity. The production service refuses to call its default ephemeral `.data/` directory durable.
+Apply the SQL migration under `supabase/migrations/` to the selected Supabase project before deploying. Supabase is the durable store for accounts, password hashes, hashed sessions, progress, quiz attempts/results, planner state, and user history. RLS is enabled with no browser-role table access; only the backend service-role client uses the database. The Google Drive Notes Library stays in the existing Google account/root; only its encrypted OAuth token is stored in Supabase. No Render filesystem persistence is used.
 
-After configuring storage, set the stable encryption key, redeploy, unlock Drive management with `GOOGLE_DRIVE_ADMIN_KEY`, and connect the Google account once. Verify `GET /api/health`, `/api/drive/status`, and `/api/drive/test` through the frontend host.
+`GET /api/health` reports only `{database: {provider, configured, reachable}}` and readiness booleans; it never returns keys or connection details. A ready deployment requires the Supabase URL/service key and an applied migration. If Supabase is down or unconfigured, health returns a non-ready status without clearing user data.

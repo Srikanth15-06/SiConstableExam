@@ -5,8 +5,15 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { generateQuestions, generateNotes, generateChatReply, getAiStatus } from './ai-service.mjs';
-import { buildGoogleDriveAuthUrl, clearGoogleDriveToken, deleteDriveFile, exchangeGoogleDriveCode, getDriveFileContent, getGoogleDriveRootFolderId, getGoogleDriveStatus, getTopicFileContent, listDriveFolderContents, listDriveTopicFiles, provisionSubjectTopicFolders, testGoogleDriveConnection, uploadTopicFile } from './google-drive-service.mjs';
+import { buildGoogleDriveAuthUrl, clearGoogleDriveToken, deleteDriveFile, exchangeGoogleDriveCode, getDriveFileContent, getGoogleDriveRootFolderId, getGoogleDriveStatus, getTopicFileContent, listDriveFolderContents, listDriveTopicFiles, provisionSubjectTopicFolders, testGoogleDriveConnection, uploadTopicFile, validateGoogleDriveConfig } from './google-drive-service.mjs';
+import { createAuthenticationRouter, createAuthenticationMiddleware } from './auth-service.mjs';
+import { createUserDataRouter } from './user-data-routes.mjs';
 import { describeAiFailure, sanitizeApiError } from './provider-manager.mjs';
+import { SupabaseDataStore } from './supabase-data-store.mjs';
+import { SupabaseSessionStore } from './supabase-session-store.mjs';
+import { isSupabaseConfigured } from './supabase-client.mjs';
+import { validateProductionEnvironment } from './production-config.mjs';
+import { getHealthStatus } from './health-status.mjs';
 
 dotenv.config();
 
@@ -21,18 +28,117 @@ const frontendUrl = process.env.FRONTEND_URL || process.env.RENDER_EXTERNAL_URL 
 const configuredFrontendOrigins = (process.env.FRONTEND_ORIGINS || '').split(',').map((origin) => origin.trim()).filter(Boolean);
 const allowedOrigins = new Set([
     frontendUrl,
-    process.env.RENDER_EXTERNAL_URL,
     ...configuredFrontendOrigins,
-    ...(process.env.NODE_ENV === 'development' ? ['http://localhost:5173', 'http://127.0.0.1:5173'] : [])
+    ...(!isProduction ? ['http://localhost:5173', 'http://127.0.0.1:5173'] : [])
 ].filter(Boolean).map((origin) => new URL(origin).origin));
 const sessionSecret = process.env.SESSION_SECRET || (process.env.NODE_ENV === 'production' ? '' : randomBytes(32).toString('hex'));
 const OAUTH_STATE_TTL_MS = 10 * 60 * 1000;
 const DRIVE_ADMIN_COOKIE = 'drive_admin_session';
 const DRIVE_ADMIN_SESSION_TTL_MS = 8 * 60 * 60 * 1000;
+const getDriveAdminKey = () => String(process.env.GOOGLE_DRIVE_ADMIN_KEY || '').trim();
+const productionConfigurationIssues = validateProductionEnvironment(process.env);
+if (productionConfigurationIssues.length) {
+    throw new Error(`Invalid production configuration: ${productionConfigurationIssues.join('; ')}.`);
+}
 
-if (isProduction && !frontendUrl) throw new Error('FRONTEND_URL or RENDER_EXTERNAL_URL must be configured in production.');
-if (!sessionSecret) throw new Error('SESSION_SECRET must be configured in production.');
+const candidateSessions = new SupabaseSessionStore();
+const requireCandidateSession = createAuthenticationMiddleware(candidateSessions);
+const candidateDataStore = new SupabaseDataStore();
+
 if (isProduction) app.set('trust proxy', 1);
+app.disable('x-powered-by');
+
+function createIpRateLimiter({ limit, windowMs, code, message }) {
+    const clients = new Map();
+    return (req, res, next) => {
+        const now = Date.now();
+        const clientKey = req.ip || req.socket.remoteAddress || 'unknown';
+        let bucket = clients.get(clientKey);
+        if (!bucket || bucket.resetAt <= now) {
+            bucket = { count: 0, resetAt: now + windowMs };
+            clients.set(clientKey, bucket);
+        }
+        if (bucket.count >= limit) {
+            res.setHeader('Retry-After', String(Math.max(1, Math.ceil((bucket.resetAt - now) / 1000))));
+            res.status(429).json({ success: false, code, message });
+            return;
+        }
+        bucket.count += 1;
+        res.setHeader('RateLimit-Limit', String(limit));
+        res.setHeader('RateLimit-Remaining', String(Math.max(0, limit - bucket.count)));
+        res.setHeader('RateLimit-Reset', String(Math.ceil(bucket.resetAt / 1000)));
+        if (clients.size > 5000) {
+            for (const [key, value] of clients) {
+                if (value.resetAt <= now) clients.delete(key);
+            }
+        }
+        next();
+    };
+}
+
+const aiRateLimiter = createIpRateLimiter({
+    limit: 20,
+    windowMs: 60_000,
+    code: 'RATE_LIMITED',
+    message: 'Too many AI requests. Wait briefly before trying again.'
+});
+const questionRateLimiter = createIpRateLimiter({
+    limit: 5,
+    windowMs: 5 * 60_000,
+    code: 'RATE_LIMITED',
+    message: 'Too many question sets were requested. Wait a few minutes before trying again.'
+});
+const adminLoginRateLimiter = createIpRateLimiter({
+    limit: 5,
+    windowMs: 15 * 60_000,
+    code: 'DRIVE_ADMIN_RATE_LIMITED',
+    message: 'Too many administrator sign-in attempts. Wait before trying again.'
+});
+const candidateSignupRateLimiter = createIpRateLimiter({
+    limit: 5,
+    windowMs: 15 * 60_000,
+    code: 'SIGNUP_RATE_LIMITED',
+    message: 'Too many signup attempts. Wait before trying again.'
+});
+const candidateLoginRateLimiter = createIpRateLimiter({
+    limit: 5,
+    windowMs: 15 * 60_000,
+    code: 'LOGIN_RATE_LIMITED',
+    message: 'Too many login attempts. Wait before trying again.'
+});
+const candidateLegacyImportRateLimiter = createIpRateLimiter({
+    limit: 3,
+    windowMs: 15 * 60_000,
+    code: 'LEGACY_IMPORT_RATE_LIMITED',
+    message: 'Too many legacy import attempts. Wait before trying again.'
+});
+const userDataRateLimiter = createIpRateLimiter({
+    limit: 120,
+    windowMs: 60_000,
+    code: 'USER_DATA_RATE_LIMITED',
+    message: 'Too many account-data requests. Wait briefly before trying again.'
+});
+const testSubmitRateLimiter = createIpRateLimiter({
+    limit: 30,
+    windowMs: 60_000,
+    code: 'TEST_SUBMISSION_RATE_LIMITED',
+    message: 'Too many test submissions. Wait briefly before trying again.'
+});
+const driveApiRateLimiter = createIpRateLimiter({
+    limit: 120,
+    windowMs: 60_000,
+    code: 'DRIVE_RATE_LIMITED',
+    message: 'Too many Google Drive requests. Wait briefly before trying again.'
+});
+
+app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    if (isProduction) res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    next();
+});
 
 app.use(cors({
     origin(origin, callback) {
@@ -41,6 +147,44 @@ app.use(cors({
     credentials: true
 }));
 app.use(express.json({ limit: '2mb' }));
+app.use('/api/drive', driveApiRateLimiter);
+app.use('/api', (req, res, next) => {
+    const startedAt = process.hrtime.bigint();
+    res.on('finish', () => {
+        const durationMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+        if (res.statusCode >= 400 || durationMs >= 1_000) {
+            console.log(JSON.stringify({
+                category: 'http',
+                method: req.method,
+                path: req.path,
+                status: res.statusCode,
+                durationMs: Math.round(durationMs)
+            }));
+        }
+    });
+    next();
+});
+app.use('/api', createAuthenticationRouter({
+    dataStore: candidateDataStore,
+    sessions: candidateSessions,
+    allowedOrigins,
+    secureCookies: isProduction,
+    rateLimiters: {
+        signup: candidateSignupRateLimiter,
+        login: candidateLoginRateLimiter,
+        legacyImport: candidateLegacyImportRateLimiter
+    }
+}));
+app.use('/api', createUserDataRouter({
+    dataStore: candidateDataStore,
+    sessions: candidateSessions,
+    allowedOrigins,
+    rateLimiters: {
+        createTest: questionRateLimiter,
+        submitTest: testSubmitRateLimiter,
+        userData: userDataRateLimiter
+    }
+}));
 
 app.use(express.static(frontendDist));
 
@@ -83,7 +227,7 @@ function readCookie(req, name) {
 }
 
 function isDriveAdminAuthorized(req) {
-    return Boolean(process.env.GOOGLE_DRIVE_ADMIN_KEY?.trim() && isValidSignedToken(
+    return Boolean(getDriveAdminKey() && isValidSignedToken(
         readCookie(req, DRIVE_ADMIN_COOKIE),
         'drive-admin-session',
         DRIVE_ADMIN_SESSION_TTL_MS
@@ -100,7 +244,7 @@ function requireDriveAdmin(req, res, next) {
         driveAdminFailure(res, 'DRIVE_ADMIN_ORIGIN_DENIED', 403, 'This origin cannot manage the Google Drive Notes Library.');
         return;
     }
-    if (!process.env.GOOGLE_DRIVE_ADMIN_KEY?.trim()) {
+    if (!getDriveAdminKey()) {
         driveAdminFailure(res, 'DRIVE_ADMIN_AUTH_NOT_CONFIGURED', 503, 'Google Drive administrator access is not configured on the server.');
         return;
     }
@@ -111,8 +255,8 @@ function requireDriveAdmin(req, res, next) {
     next();
 }
 
-app.post('/api/drive/admin/session', (req, res) => {
-    const configuredKey = String(process.env.GOOGLE_DRIVE_ADMIN_KEY || '');
+app.post('/api/drive/admin/session', adminLoginRateLimiter, (req, res) => {
+    const configuredKey = getDriveAdminKey();
     if (!configuredKey) {
         driveAdminFailure(res, 'DRIVE_ADMIN_AUTH_NOT_CONFIGURED', 503, 'Google Drive administrator access is not configured on the server.');
         return;
@@ -193,7 +337,7 @@ app.get('/api/drive/auth/status', async (req, res) => {
             ...status,
             success: true,
             connected: Boolean(status.connected),
-            adminAuthConfigured: Boolean(process.env.GOOGLE_DRIVE_ADMIN_KEY?.trim()),
+            adminAuthConfigured: Boolean(getDriveAdminKey()),
             adminAuthorized: isDriveAdminAuthorized(req)
         });
     } catch (error) {
@@ -201,8 +345,12 @@ app.get('/api/drive/auth/status', async (req, res) => {
     }
 });
 
-app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, service: 'TS Police AI Prep API' });
+app.get('/api/health', async (_req, res) => {
+    const health = await getHealthStatus({
+        databaseConfigured: isSupabaseConfigured(),
+        checkDatabase: () => candidateDataStore.checkHealth()
+    });
+    res.status(health.statusCode).json(health.body);
 });
 
 app.get('/api/ai/status', async (_req, res) => {
@@ -231,7 +379,7 @@ app.get('/api/drive/test', async (_req, res) => {
     }
 });
 
-app.get('/api/drive/folders', async (_req, res) => {
+app.get('/api/drive/folders', requireCandidateSession, async (_req, res) => {
     try {
         const contents = await listDriveFolderContents(getGoogleDriveRootFolderId());
         res.json({ success: true, provider: 'googleDrive', ...contents });
@@ -240,7 +388,7 @@ app.get('/api/drive/folders', async (_req, res) => {
     }
 });
 
-app.get('/api/drive/folders/:folderId', async (req, res) => {
+app.get('/api/drive/folders/:folderId', requireCandidateSession, async (req, res) => {
     try {
         const contents = await listDriveFolderContents(req.params.folderId);
         res.json({ success: true, provider: 'googleDrive', ...contents });
@@ -249,7 +397,7 @@ app.get('/api/drive/folders/:folderId', async (req, res) => {
     }
 });
 
-app.get('/api/drive/files', async (req, res) => {
+app.get('/api/drive/files', requireCandidateSession, async (req, res) => {
     try {
         if (req.query.subject !== undefined || req.query.topic !== undefined || req.query.exam !== undefined) {
             const exam = String(req.query.exam || '').trim();
@@ -324,7 +472,7 @@ app.post('/api/drive/folders/:folderId/files', requireDriveAdmin, express.raw({ 
     }
 });
 
-app.get('/api/drive/folders/:folderId/files/:fileId/content', async (req, res) => {
+app.get('/api/drive/folders/:folderId/files/:fileId/content', requireCandidateSession, async (req, res) => {
     try {
         const file = await getTopicFileContent(
             req.params.fileId,
@@ -343,7 +491,7 @@ app.get('/api/drive/folders/:folderId/files/:fileId/content', async (req, res) =
     }
 });
 
-app.get('/api/drive/files/:fileId', async (req, res) => {
+app.get('/api/drive/files/:fileId', requireCandidateSession, async (req, res) => {
     try {
         const file = await getDriveFileContent(req.params.fileId, String(req.query.folderId || req.query.parentFolderId || ''));
         sendDriveFileContent(res, file, req.query.download === '1');
@@ -440,17 +588,20 @@ function sendProviderFailure(res, provider, error) {
     });
 }
 
-app.post('/api/ai/questions', async (req, res) => {
+app.post('/api/ai/questions', requireCandidateSession, aiRateLimiter, questionRateLimiter, async (req, res) => {
     try {
         const payload = req.body || {};
         const result = await generateQuestions(payload);
-        res.json({ questions: result });
+        const questions = result.map((question) => Object.fromEntries(
+            Object.entries(question).filter(([key]) => !/correct.?answer|answer.?key|solution.?key|^explanation$|^shortcut$/i.test(key))
+        ));
+        res.json({ questions });
     } catch (error) {
         sendProviderFailure(res, 'Gemini', error);
     }
 });
 
-app.post('/api/ai/notes', async (req, res) => {
+app.post('/api/ai/notes', requireCandidateSession, aiRateLimiter, async (req, res) => {
     try {
         const payload = req.body || {};
         const result = await generateNotes(payload);
@@ -460,7 +611,7 @@ app.post('/api/ai/notes', async (req, res) => {
     }
 });
 
-app.post('/api/ai/chat', async (req, res) => {
+app.post('/api/ai/chat', requireCandidateSession, aiRateLimiter, async (req, res) => {
     try {
         const payload = req.body || {};
         const result = await generateChatReply(payload);
@@ -476,6 +627,20 @@ app.use('/api', (_req, res) => {
 
 app.get('/{*splat}', (_req, res) => {
     res.sendFile(path.join(frontendDist, 'index.html'));
+});
+
+app.use((error, req, res, next) => {
+    if (res.headersSent) return next(error);
+    const requestId = randomUUID();
+    const status = Number(error.status || error.statusCode) || 500;
+    const code = error.type === 'entity.parse.failed' ? 'INVALID_JSON'
+        : status === 413 ? 'REQUEST_TOO_LARGE'
+            : 'REQUEST_FAILED';
+    const message = code === 'INVALID_JSON' ? 'Request body must contain valid JSON.'
+        : code === 'REQUEST_TOO_LARGE' ? 'Request body is too large.'
+            : 'The request could not be completed.';
+    console.error(JSON.stringify({ requestId, method: req.method, path: req.path, code }));
+    res.status(status >= 400 && status < 600 ? status : 500).json({ success: false, code, message, requestId });
 });
 
 app.listen(PORT, '0.0.0.0', () => {

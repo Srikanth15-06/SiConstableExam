@@ -103,6 +103,26 @@ test('Gemini requests replacement questions for leaked topics and incorrect perc
     assert.ok(result.every((question) => !question.question.includes('20% of 500')));
 });
 
+test('question generation falls back from Gemini to Groq and still validates the result', async () => {
+    const providers = [];
+    const result = await withFetch(async (url, options) => {
+        const target = String(url);
+        if (target.includes('generativelanguage.googleapis.com')) {
+            providers.push('Gemini');
+            return new Response(JSON.stringify({ error: { message: 'Gemini unavailable' } }), { status: 503 });
+        }
+        providers.push('Groq');
+        const model = JSON.parse(options.body).model;
+        if (model === 'groq-retired-model') return new Response(JSON.stringify({ error: { message: 'Model not found' } }), { status: 404 });
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify({ questions: makeQuestions() }) } }] }), { status: 200 });
+    }, () => generateQuestions(questionRequest));
+
+    assert.equal(result.length, 10);
+    assert.ok(result.every((question) => question.correctAnswer && question.topic === 'Percentages'));
+    assert.ok(providers.includes('Gemini'));
+    assert.ok(providers.includes('Groq'));
+});
+
 test('Groq returns structured notes for only the requested context', async () => {
     let calledUrl = '';
     const notes = {
@@ -129,6 +149,31 @@ test('Groq returns structured notes for only the requested context', async () =>
     assert.equal(result.subject, 'English');
     assert.equal(result.topic, 'Sentences');
     assert.ok(Array.isArray(result.formulas));
+});
+
+test('structured notes fall back from Groq to OpenRouter after provider failure', async () => {
+    const notes = {
+        title: 'Percentages', exam: 'TS SI', subject: 'Arithmetic', topic: 'Percentages', overview: 'Percentage notes.',
+        concepts: ['A percent is a value per hundred.'], rules: ['Convert percent to a fraction over 100.'],
+        formulas: ['p% of n = p*n/100'], examples: ['20% of 500 is 100.'], shortcuts: ['10% is one tenth.'],
+        commonMistakes: ['Do not omit the percent conversion.'], examTips: ['Estimate first.'], quickRevision: ['100% equals the whole.']
+    };
+    const providers = [];
+    const result = await withFetch(async (url, options) => {
+        const target = String(url);
+        if (target.includes('api.groq.com')) {
+            providers.push('Groq');
+            return new Response(JSON.stringify({ error: { message: 'Groq unavailable' } }), { status: 503 });
+        }
+        providers.push('OpenRouter');
+        const key = options.headers.Authorization.replace('Bearer ', '');
+        if (key === 'openrouter-test-key') return new Response(JSON.stringify({ error: { message: 'Invalid API key' } }), { status: 401 });
+        return new Response(JSON.stringify({ choices: [{ message: { content: JSON.stringify(notes) } }] }), { status: 200 });
+    }, () => generateNotes({ exam: 'TS SI', subject: 'Arithmetic', topic: 'Percentages', difficulty: 'Beginner' }));
+
+    assert.equal(result.topic, 'Percentages');
+    assert.ok(providers.includes('Groq'));
+    assert.ok(providers.includes('OpenRouter'));
 });
 
 test('Groq and OpenRouter move to the next key when the first key is rejected', async () => {
@@ -177,6 +222,25 @@ test('chat uses OpenRouter and includes the selected context and conversation hi
     assert.match(call.body.messages[0].content, /Topic: Percentages/);
     assert.equal(call.body.messages[1].content, 'How do I find 20% of a number?');
     assert.equal(reply, 'A dynamically generated tutor response.');
+});
+
+test('tutor chat falls back from OpenRouter to Groq after provider failure', async () => {
+    const providers = [];
+    const reply = await withFetch(async (url) => {
+        if (String(url).includes('openrouter.ai')) {
+            providers.push('OpenRouter');
+            return new Response(JSON.stringify({ error: { message: 'OpenRouter unavailable' } }), { status: 503 });
+        }
+        providers.push('Groq');
+        return new Response(JSON.stringify({ choices: [{ message: { content: 'A fallback tutoring response.' } }] }), { status: 200 });
+    }, () => generateChatReply({
+        exam: 'TS SI', subject: 'Arithmetic', topic: 'Percentages', difficulty: 'Beginner',
+        messages: [{ role: 'user', content: 'Explain percentages.' }]
+    }));
+
+    assert.equal(reply, 'A fallback tutoring response.');
+    assert.ok(providers.includes('OpenRouter'));
+    assert.ok(providers.includes('Groq'));
 });
 
 test('chat supports the full TS Police syllabus outside the selected study focus', async () => {

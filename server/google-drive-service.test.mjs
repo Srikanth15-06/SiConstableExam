@@ -20,6 +20,7 @@ delete process.env.ROOT_FOLDER_ID;
 delete process.env.GOOGLE_DRIVE_TOKEN;
 delete process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
 delete process.env.GOOGLE_DRIVE_ACCESS_TOKEN;
+delete process.env.GOOGLE_DRIVE_ADMIN_KEY;
 
 const {
     buildGoogleDriveAuthUrl,
@@ -41,8 +42,8 @@ test('validateGoogleDriveConfig reports OAuth setup state without exposing secre
         redirectUriConfigured: false,
         tokenEncryptionKeyConfigured: true,
         tokenStorageConfigured: true,
-        tokenStorageDurable: true,
-        tokenStorageProvider: 'encrypted-file',
+        tokenStorageDurable: false,
+        tokenStorageProvider: 'encrypted-file-development',
         adminAuthConfigured: false,
         rootFolderConfigured: true,
         connected: false
@@ -59,8 +60,8 @@ test('validateGoogleDriveConfig reports OAuth setup state without exposing secre
         redirectUriConfigured: true,
         tokenEncryptionKeyConfigured: true,
         tokenStorageConfigured: true,
-        tokenStorageDurable: true,
-        tokenStorageProvider: 'encrypted-file',
+        tokenStorageDurable: false,
+        tokenStorageProvider: 'encrypted-file-development',
         adminAuthConfigured: false,
         rootFolderConfigured: false,
         connected: false
@@ -74,8 +75,8 @@ test('validateGoogleDriveConfig reports OAuth setup state without exposing secre
         redirectUriConfigured: true,
         tokenEncryptionKeyConfigured: true,
         tokenStorageConfigured: true,
-        tokenStorageDurable: true,
-        tokenStorageProvider: 'encrypted-file',
+        tokenStorageDurable: false,
+        tokenStorageProvider: 'encrypted-file-development',
         adminAuthConfigured: false,
         rootFolderConfigured: true,
         connected: false
@@ -94,46 +95,62 @@ test('Drive status reports missing OAuth configuration without disclosing secret
     assert.equal(status.available, false);
     assert.equal(status.provider, 'google-drive');
     assert.equal(status.rootFolderConfigured, true);
+    assert.equal(status.adminAuthConfigured, false);
+    assert.equal(status.tokenStorage.encryptionKeyConfigured, true);
     assert.equal(status.code, 'MISSING_GOOGLE_OAUTH_CONFIG');
     assert.equal(status.checks.credentials, false);
 });
 
-test('production token storage rejects the ephemeral default path', () => {
+test('production token storage never treats a token file as durable', () => {
     const originalNodeEnv = process.env.NODE_ENV;
-    const originalDatabaseUrl = process.env.DATABASE_URL;
     const originalTokenFile = process.env.GOOGLE_DRIVE_TOKEN_FILE;
+    const originalRender = process.env.RENDER;
+    const originalRenderServiceId = process.env.RENDER_SERVICE_ID;
+    const originalDurableFlag = process.env.GOOGLE_DRIVE_TOKEN_FILE_DURABLE;
     process.env.NODE_ENV = 'production';
-    delete process.env.DATABASE_URL;
+    delete process.env.RENDER;
+    delete process.env.RENDER_SERVICE_ID;
     delete process.env.GOOGLE_DRIVE_TOKEN_FILE;
 
     try {
         const ephemeral = getGoogleDriveTokenStorageStatus();
         assert.equal(ephemeral.configured, false);
         assert.equal(ephemeral.durable, false);
+        assert.equal(ephemeral.provider, 'unconfigured');
         process.env.GOOGLE_DRIVE_TOKEN_FILE = '/var/data/google-drive-token.enc';
         const mounted = getGoogleDriveTokenStorageStatus();
-        assert.equal(mounted.configured, true);
-        assert.equal(mounted.durable, true);
+        assert.equal(mounted.configured, false);
+        assert.equal(mounted.durable, false);
+        assert.equal(mounted.provider, 'unconfigured');
+
+        process.env.RENDER = 'true';
+        process.env.GOOGLE_DRIVE_TOKEN_FILE_DURABLE = 'true';
+        const renderFile = getGoogleDriveTokenStorageStatus();
+        assert.equal(renderFile.configured, false);
+        assert.equal(renderFile.durable, false);
+        assert.equal(renderFile.provider, 'unconfigured');
     } finally {
         if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
         else process.env.NODE_ENV = originalNodeEnv;
-        if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
-        else process.env.DATABASE_URL = originalDatabaseUrl;
         if (originalTokenFile === undefined) delete process.env.GOOGLE_DRIVE_TOKEN_FILE;
         else process.env.GOOGLE_DRIVE_TOKEN_FILE = originalTokenFile;
+        if (originalRender === undefined) delete process.env.RENDER;
+        else process.env.RENDER = originalRender;
+        if (originalRenderServiceId === undefined) delete process.env.RENDER_SERVICE_ID;
+        else process.env.RENDER_SERVICE_ID = originalRenderServiceId;
+        if (originalDurableFlag === undefined) delete process.env.GOOGLE_DRIVE_TOKEN_FILE_DURABLE;
+        else process.env.GOOGLE_DRIVE_TOKEN_FILE_DURABLE = originalDurableFlag;
     }
 });
 
 test('production Drive token vault persists only encrypted tokens in the configured root', async () => {
     const originalNodeEnv = process.env.NODE_ENV;
-    const originalDatabaseUrl = process.env.DATABASE_URL;
     const originalTokenFile = process.env.GOOGLE_DRIVE_TOKEN_FILE;
     const originalVaultAccount = process.env.GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON;
     const originalRootFolderId = process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
     const originalFetch = globalThis.fetch;
     const originalGetClient = google.auth.GoogleAuth.prototype.getClient;
     process.env.NODE_ENV = 'production';
-    delete process.env.DATABASE_URL;
     delete process.env.GOOGLE_DRIVE_TOKEN_FILE;
     process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID = 'vault-root-id';
     process.env.GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON = JSON.stringify({
@@ -218,8 +235,6 @@ test('production Drive token vault persists only encrypted tokens in the configu
         google.auth.GoogleAuth.prototype.getClient = originalGetClient;
         if (originalNodeEnv === undefined) delete process.env.NODE_ENV;
         else process.env.NODE_ENV = originalNodeEnv;
-        if (originalDatabaseUrl === undefined) delete process.env.DATABASE_URL;
-        else process.env.DATABASE_URL = originalDatabaseUrl;
         if (originalTokenFile === undefined) delete process.env.GOOGLE_DRIVE_TOKEN_FILE;
         else process.env.GOOGLE_DRIVE_TOKEN_FILE = originalTokenFile;
         if (originalVaultAccount === undefined) delete process.env.GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON;
@@ -246,6 +261,8 @@ test('Drive status preserves OAuth connection state during a temporary Drive API
         const status = await getGoogleDriveStatus();
         assert.equal(status.connected, true);
         assert.equal(status.available, false);
+        assert.equal(status.checks.authentication, true);
+        assert.equal(status.checks.driveApi, false);
         assert.equal(status.code, 'DRIVE_API_FAILED');
     } finally {
         globalThis.fetch = originalFetch;

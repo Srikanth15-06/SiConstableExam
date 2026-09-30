@@ -9,11 +9,93 @@ class AIServiceError extends Error {
   }
 }
 
+async function requestCandidateApi(path, { method = 'GET', body, headers = {} } = {}) {
+  let response;
+  try {
+    response = await fetch(apiUrl(path), {
+      method,
+      credentials: 'include',
+      headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) })
+    });
+  } catch {
+    throw new AIServiceError('Unable to connect to the server. Please try again.', { code: 'NETWORK_ERROR' });
+  }
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.success === false) {
+    const message = response.status >= 500
+      ? 'Your saved data is temporarily unavailable. Nothing was cleared. Please retry.'
+      : data.message || 'The request could not be completed. Check your details and try again.';
+    throw new AIServiceError(message, { code: data.code || 'REQUEST_FAILED', status: response.status });
+  }
+  return data;
+}
+
+export async function signUpCandidate({ name, email, password }) {
+  return requestCandidateApi('/api/auth/signup', { method: 'POST', body: { name, email, password } });
+}
+
+export async function loginCandidate({ email, password }) {
+  return requestCandidateApi('/api/auth/login', { method: 'POST', body: { email, password } });
+}
+
+export async function importLegacyCandidate({ legacyRecord, password }) {
+  return requestCandidateApi('/api/auth/legacy-import', {
+    method: 'POST',
+    body: { legacyRecord, password }
+  });
+}
+
+export async function logoutCandidate() {
+  return requestCandidateApi('/api/auth/logout', { method: 'POST', body: {} });
+}
+
+export async function getCurrentCandidate() {
+  return requestCandidateApi('/api/auth/me');
+}
+
+export async function getCurrentCandidateData() {
+  return requestCandidateApi('/api/me/data');
+}
+
+export async function updateCurrentCandidateProfile(profile) {
+  return requestCandidateApi('/api/me/profile', { method: 'PATCH', body: profile });
+}
+
+export async function saveCurrentCandidatePlanner(plannerData, expectedRevision = 0) {
+  return requestCandidateApi('/api/me/planner', { method: 'PUT', body: { plannerData, expectedRevision } });
+}
+
+export async function createTestAttempt({ exam, subject, topic, difficulty }) {
+  const idempotencyKey = crypto.randomUUID();
+  return requestCandidateApi('/api/tests', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': idempotencyKey },
+    body: { exam, subject, topic, difficulty }
+  });
+}
+
+export async function submitTestAttempt(attemptId, answers) {
+  return requestCandidateApi(`/api/tests/${encodeURIComponent(attemptId)}/submit`, {
+    method: 'POST',
+    body: { answers }
+  });
+}
+
+export async function saveTestAnswers(attemptId, answers) {
+  return requestCandidateApi(`/api/tests/${encodeURIComponent(attemptId)}/answers`, {
+    method: 'PUT',
+    body: { answers }
+  });
+}
+
 async function postAI(path, payload, provider) {
   let response;
   try {
     response = await fetch(apiUrl(path), {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload)
     });
@@ -116,7 +198,7 @@ function getDriveErrorMessage(code, fallback = 'Google Drive notes could not be 
   const messages = {
     MISSING_GOOGLE_OAUTH_CONFIG: 'Google Drive OAuth is not configured on the server.',
     MISSING_DRIVE_TOKEN_ENCRYPTION_KEY: 'Google Drive token encryption is not configured on the server.',
-    DRIVE_TOKEN_STORAGE_NOT_CONFIGURED: 'Google Drive needs persistent token storage on the server before it can connect.',
+    DRIVE_TOKEN_STORAGE_NOT_CONFIGURED: 'Google Drive needs Supabase token storage and its encryption key configured on the server before it can connect.',
     SUBJECT_FOLDER_NOT_FOUND: 'No subject folder found in the configured Notes Library.',
     TOPIC_FOLDER_NOT_FOUND: 'No notes folder found for this topic.',
     MISSING_ROOT_FOLDER: 'Google Drive root folder is not configured.',
@@ -205,7 +287,7 @@ export async function getDriveStatus() {
   let response;
   let data;
   try {
-    response = await fetch(apiUrl('/api/drive/status'));
+    response = await fetch(apiUrl('/api/drive/status'), { credentials: 'include' });
     data = await response.json().catch(() => ({}));
   } catch (error) {
     throw new AIServiceError(import.meta.env.DEV ? `Network error calling /api/drive/status: ${error.message}` : 'Google Drive is temporarily unavailable.', { provider: 'Google Drive', code: 'DRIVE_API_FAILED' });
@@ -249,7 +331,7 @@ export async function getDriveTopicFiles({ exam, subject, topic }) {
   }
   const query = new URLSearchParams({ exam, subject, topic });
   try {
-    const response = await fetch(apiUrl(`/api/drive/files?${query}`));
+    const response = await fetch(apiUrl(`/api/drive/files?${query}`), { credentials: 'include' });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || data.success !== true || !Array.isArray(data.files)) {
       throw new AIServiceError(data.message || getDriveErrorMessage(data.code), {
@@ -269,6 +351,7 @@ export async function provisionDriveFolders(subjects) {
   try {
     const response = await fetch(apiUrl('/api/drive/folders/provision'), {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ subjects })
     });
@@ -310,6 +393,7 @@ export async function uploadDriveFile(folderId, subjectFolderId, file) {
   try {
     const response = await fetch(apiUrl(`/api/drive/upload?${query}`), {
       method: 'POST',
+      credentials: 'include',
       headers: { 'Content-Type': 'application/octet-stream' },
       body: file
     });

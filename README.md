@@ -17,7 +17,7 @@ This repository has two separately installed parts:
 - Take practice tests and review answers, explanations, shortcuts, scores, and test history.
 - Track topic progress and use the study planner to prioritize revision.
 - Connect Google Drive to browse topic folders, preview or download notes, provision subject/topic folders, and upload supported files (up to 20 MB).
-- Keep separate local browser profiles for individual learners.
+- Secure candidate accounts with Supabase-backed sessions, progress, test history, and planner data.
 
 ## Architecture and requests
 
@@ -29,7 +29,8 @@ The Express server provides these API groups:
 - `/api/drive/auth`, `/api/drive/oauth2callback`, `/api/drive/status`, and `/api/drive/test` for OAuth and diagnostics.
 - `/api/drive/folders`, `/api/drive/upload`, `/api/drive/files`, and `/api/drive/files/:id` for root-scoped Notes Library operations.
 - `/api/drive/admin/session` for administrator sign-in/out; mutating Drive operations require its HTTP-only session.
-- `/api/health` for a basic server health check.
+- `/api/auth/*` for candidate signup/login/session/logout, `/api/me/*` for the authenticated account snapshot and planner/profile, and `/api/tests/*` for server-created and server-scored attempts.
+- `/api/health` for a safe Supabase configuration/reachability readiness check.
 
 Locally, the Express server can serve the built frontend from `frontend/dist`. In production, Render serves `frontend/` as a static site and rewrites `/api/*` to the separate Express service. The API remains same-origin from the browser; if using a different host, configure `VITE_API_BASE_URL` explicitly and set the backend's allowed frontend origin.
 
@@ -56,14 +57,15 @@ Set these variables on the Render backend web service only. Keep all key and sec
 - `NODE_ENV=production`
 - `SESSION_SECRET` (a long random value)
 - `FRONTEND_URL=https://siconstableexam-1.onrender.com`
-- `GOOGLE_DRIVE_ADMIN_KEY` (a separate random key used to authorize Drive management)
-- Provider key/model pairs for the AI features in use, such as `GEMINI_API_KEY_1` / `GEMINI_MODEL_1`, `GROQ_API_KEY_1` / `GROQ_MODEL_1`, and `OPENROUTER_API_KEY_1` / `OPENROUTER_MODEL_1`. Numbered pairs through `_20` are supported.
-- For Drive: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI=https://siconstableexam-1.onrender.com/api/drive/oauth2callback`, `GOOGLE_DRIVE_ROOT_FOLDER_ID`, and `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY`.
-- For durable token storage: `DATABASE_URL` for PostgreSQL, or `GOOGLE_DRIVE_TOKEN_FILE=/var/data/google-drive-token.enc` on a persistent disk. The current Free web instance does not support disks, and the default `.data/` path is not durable in production.
-- Optional Drive settings: `DATABASE_SSL`, `GOOGLE_DRIVE_SHARED_DRIVE_ID`, and `GOOGLE_DRIVE_TOKEN_FILE_DURABLE=true` for a custom persistent mount.
+- `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` for backend persistence. `SUPABASE_ANON_KEY` may be configured for tooling, but this app does not connect to Supabase from the browser.
+- `SESSION_SECRET` (a long random value; sessions are persisted as hashes in Supabase).
+- Provider key/model pairs for AI features, such as `GEMINI_API_KEY_1` / `GEMINI_MODEL_1`, `GROQ_API_KEY_1` / `GROQ_MODEL_1`, and `OPENROUTER_API_KEY_1` / `OPENROUTER_MODEL_1`. Numbered pairs through `_20` are supported.
+- Optional Google Drive Notes Library settings: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `GOOGLE_REDIRECT_URI=https://siconstableexam-1.onrender.com/api/drive/oauth2callback`, the existing `GOOGLE_DRIVE_ROOT_FOLDER_ID=1rz_XI2AkAkQNfrsbKW9Rs78xSptWFJ1z`, `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY`, and `GOOGLE_DRIVE_ADMIN_KEY`.
+- Google OAuth and Drive token storage are optional for application login/progress. If enabled, OAuth tokens are AES-256-GCM encrypted in Supabase; no service-account JSON, `GOOGLE_DRIVE_TOKEN_FILE`, external database, or persistent disk is required.
+- Optional Drive setting: `GOOGLE_DRIVE_SHARED_DRIVE_ID` (not required for the existing My Drive folder).
 - Optional OpenRouter site metadata: `OPENROUTER_SITE_URL`.
 
-The static frontend rewrites `/api/*` to the backend, including the Google callback path. Register the exact frontend callback URI above in Google Cloud. PostgreSQL is the preferred durable token store; encrypted file storage is supported locally or on a persistent disk. This repository currently has no database provisioned, so configure `DATABASE_URL` or a persistent disk before connecting Drive in production. Keep `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` stable; changing it makes saved tokens unreadable.
+The static frontend rewrites `/api/*` to the backend, including the Google callback path. Register the exact frontend callback URI above in Google Cloud when enabling Notes Library OAuth. Candidate accounts, password hashes, sessions, progress, planner records, attempts, answers, and history are persisted in Supabase by the backend. The browser never receives the service-role key. Drive files remain in the existing Notes Library root and are accessed only by the OAuth identity `websriweb@gmail.com`.
 
 Render dashboard configuration is managed in the dashboard; no duplicate `render.yaml` is included. See [GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md) and [RENDER_ENV.md](RENDER_ENV.md) for setup checklists.
 
@@ -71,8 +73,9 @@ Render dashboard configuration is managed in the dashboard; no duplicate `render
 
 - Node.js compatible with Vite 8 (Node.js 20.19+ or 22.12+ recommended).
 - npm.
+- A Supabase project and backend-only service-role key for durable account/application persistence.
 - API credentials for the AI features you intend to use.
-- Google OAuth credentials and a configured Drive folder only if you intend to use Drive integration.
+- Google OAuth credentials only if you want to enable the separate Notes Library integration.
 
 ## Run locally on Windows
 
@@ -83,7 +86,7 @@ npm install
 npm install --prefix frontend
 ```
 
-Create a local `.env` from `.env.example` for backend configuration. Add provider keys/models and optional Google Drive settings described below. AI features require their corresponding provider to be configured; the frontend and non-AI parts can still be explored without provider keys.
+Create a local `.env` from `.env.example` for backend configuration. Apply the SQL migration in `supabase/migrations/` to a fresh Supabase project, then configure its URL and service-role key only on the backend. Add provider keys/models as needed; AI providers and Google Drive Notes are optional for account persistence.
 
 Open two terminals in the repository root:
 
@@ -115,45 +118,56 @@ Configure API key and model pairs for the provider used by each feature. Numbere
 
 Additional pairs can use suffixes `_2` through `_20`, for example `GEMINI_API_KEY_2` and `GEMINI_MODEL_2`. Configure models supported by the corresponding provider.
 
-### Google Drive (optional)
+### Supabase persistence
 
-Google Drive uses OAuth 2.0 and the Google account that owns or can access the Notes Library. Learner profiles are browser-local, not server-authenticated identities, so Drive is intentionally a global administrator-managed library. Set the local Google OAuth redirect URI to `http://localhost:8787/api/drive/oauth2callback`; use the production callback in [GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md).
+Candidate accounts, persistent HTTP-only sessions, progress, quiz attempts/history, and planner state are stored in Supabase. Apply the SQL migration in `supabase/migrations/` to a fresh project before starting the backend.
+
+| Variable | Purpose |
+| --- | --- |
+| `SUPABASE_URL` | Supabase project URL; backend only |
+| `SUPABASE_SERVICE_ROLE_KEY` | Privileged server key; backend only, never a `VITE_*` variable |
+| `SUPABASE_ANON_KEY` | Optional public project key; this application does not use it in the browser |
+
+The backend uses parameterized Supabase/PostgREST requests and fixed RPCs for atomic state updates. RLS is enabled and browser roles have no table/function access; only the backend service role can access application data. Sessions persist only a hash of the random cookie token.
+
+### Google Drive Notes Library (optional)
+
+Google Drive remains a separate OAuth-backed Notes Library using the existing Google account and root. Candidate profiles are server-authenticated and do not depend on Drive OAuth. Set the local callback to `http://localhost:8787/api/drive/oauth2callback`; use the production callback in [GOOGLE_DRIVE_SETUP.md](GOOGLE_DRIVE_SETUP.md).
 
 | Variable | Purpose |
 | --- | --- |
 | `GOOGLE_CLIENT_ID` | Google OAuth client ID |
 | `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
 | `GOOGLE_REDIRECT_URI` | Must match the redirect URI configured with Google; use the local URL above for development |
-| `GOOGLE_DRIVE_ROOT_FOLDER_ID` | ID of the Drive folder used as the notes library root |
-| `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` | 32-byte key, encoded as base64 or 64 hexadecimal characters, used to encrypt the saved refresh token |
+| `GOOGLE_DRIVE_ROOT_FOLDER_ID` | Existing Notes Library root ID: `1rz_XI2AkAkQNfrsbKW9Rs78xSptWFJ1z` |
+| `GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY` | 32-byte key, encoded as base64 or 64 hexadecimal characters, used to encrypt the OAuth token stored in Supabase |
 | `GOOGLE_DRIVE_ADMIN_KEY` | Backend-only key used to create an expiring HTTP-only administrator session for Drive management |
-| `DATABASE_URL` | PostgreSQL URL for encrypted persistent OAuth-token storage; required for durable storage without a persistent disk |
-| `GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON` | Optional service-account JSON used only to persist the encrypted token in the existing Drive root |
-| `DATABASE_SSL` | Set to `true` when the PostgreSQL provider requires TLS |
 | `GOOGLE_DRIVE_SHARED_DRIVE_ID` | Optional shared-drive ID when the library is in a shared drive |
-| `GOOGLE_DRIVE_TOKEN_FILE` | Optional encrypted token file; defaults to `.data/google-drive-token.enc` for local development only |
 
-The connected account needs permission to read the root folder; creating folders, uploads, and deletes require Editor access. The existing library contains files not necessarily created by this app, so the Drive scope is required for listing and managing those files. PostgreSQL stores an encrypted token payload plus expiry/scope metadata; file fallback uses AES-256-GCM. On Render Free, the OAuth user creates one reserved encrypted non-note file inside the existing root and grants the service account writer access to that file only. OAuth remains the Notes Library identity. Do not grant the service account access to the whole root. Keep the encryption key stable. `.data/` is excluded from Git and must not be used as durable production storage.
+The connected account needs permission to read the existing root folder; creating folders, uploads, and deletes require Editor access. Drive tokens are AES-256-GCM encrypted before they are stored in the Supabase `drive_oauth_tokens` table. Google Drive files remain in Drive; Supabase does not move or delete them. If Supabase or Drive OAuth is unavailable, account login/progress remains separate, while Notes Library requests report a Drive-specific error.
 
 ### Other settings
 
 | Variable | Purpose |
 | --- | --- |
 | `PORT` or `AI_SERVER_PORT` | Express listen port; defaults to `8787` (`PORT` takes precedence) |
-| `SESSION_SECRET` | Required in production; signs short-lived OAuth state and administrator sessions. In development, a temporary value is generated if omitted. |
+| `SESSION_SECRET` | Required in production; signs OAuth state and Drive administrator sessions. Candidate sessions are persisted by token hash in Supabase. |
 | `FRONTEND_URL` | Frontend URL used after Google OAuth; defaults to `http://localhost:5173` |
 | `VITE_API_PROXY_TARGET` | Development proxy target for `/api`; defaults to `http://localhost:8787` |
 | `VITE_API_BASE_URL` | Optional API base URL used by the browser client; defaults to same-origin paths |
 
 ## Where data is stored
 
-- **Browser (`localStorage`):** local learner profiles, active profile, password salt/hash, study progress, test history, question counters, and planner data. This data is tied to the browser profile and origin; it is not synchronized to the server and can be removed by clearing site data. The app's local profiles are for organizing study data, not a server-backed identity or account system.
-- **Google Drive:** uploaded notes and the folder/file library are stored in the configured Drive account. The app accesses them through the backend; it does not keep uploaded notes in its own database.
-- **Backend token storage:** encrypted PostgreSQL record when `DATABASE_URL` is configured; otherwise encrypted `.data/google-drive-token.enc` locally, an explicitly mounted persistent file in production, or the reserved encrypted token-vault file in the existing Drive root.
+- **Supabase:** accounts, bcrypt password hashes, hashed sessions, progress, attempts, answers/results, planner, and history. A Postgres RPC updates the canonical per-user state and normalized projections atomically with revision checks.
+- **Browser memory:** authenticated profile and progress snapshots are held in React state only. They are fetched from the backend after refresh/login; no credential, answer key, or progress authority is stored in browser storage.
+- **Google Drive:** uploaded notes and the folder/file library remain in the configured Drive account and are accessed through the backend.
+- **Drive OAuth token:** AES-256-GCM encrypted in Supabase; no service-account credential or Render filesystem token persistence is required.
 - **Backend memory:** transient AI/provider state only; OAuth state and administrator sessions are signed and do not depend on the Render process memory.
 - **AI providers:** requests are sent from the backend to the configured provider. API keys stay server-side; provider availability, quotas, and billing are controlled by those providers.
 
-No application database is currently configured. Browser study data, encrypted Drive token storage, and the actual Drive library are separate storage locations. PostgreSQL support is used for durable Drive token storage when `DATABASE_URL` is provided; it does not migrate browser-local progress.
+Render Free does not need a persistent disk. Supabase is the durable application datastore; Google Drive remains the separate Notes Library file store.
+
+Legacy browser-local profiles are not automatically imported. Their stored scores and answer keys were client-controlled and cannot be verified by the server; users must create a server-backed account. The old local browser data is not read by the new app flow.
 
 ## Build, test, and lint
 

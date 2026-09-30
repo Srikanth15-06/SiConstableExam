@@ -93,11 +93,14 @@ function getConfigurationError() {
     if (!config.tokenEncryptionKeyConfigured) {
         return new GoogleDriveError('MISSING_DRIVE_TOKEN_ENCRYPTION_KEY', 'Google Drive token encryption is not configured.');
     }
-    if (!config.tokenStorageConfigured) {
-        return new GoogleDriveError('DRIVE_TOKEN_STORAGE_NOT_CONFIGURED', 'Configure durable token storage with DATABASE_URL, a persistent GOOGLE_DRIVE_TOKEN_FILE, or GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON.');
-    }
     if (!config.rootFolderConfigured) {
         return new GoogleDriveError('MISSING_ROOT_FOLDER', 'Google Drive notes folder is not configured.');
+    }
+    if (!config.tokenStorageConfigured) {
+        const message = process.env.RENDER === 'true' || process.env.RENDER_SERVICE_ID
+            ? 'Configure Supabase and GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY for durable Google Drive token storage. The Notes Library remains separate from account data.'
+            : 'Configure Supabase for durable Google Drive token storage, or reconnect using local development settings.';
+        return new GoogleDriveError('DRIVE_TOKEN_STORAGE_NOT_CONFIGURED', message);
     }
     return null;
 }
@@ -128,8 +131,7 @@ async function getStoredToken() {
             throw new GoogleDriveError('DRIVE_TOKEN_STORAGE_FAILED', 'The configured Google Drive token is not valid JSON.');
         }
     }
-    const sharedDatabaseConfigured = Boolean(process.env.DATABASE_URL?.trim());
-    if (!sharedDatabaseConfigured && storedTokenCacheLoaded) return storedTokenCache;
+    if (storedTokenCacheLoaded) return storedTokenCache;
     try {
         storedTokenCache = await getStoredGoogleDriveToken();
     } catch (error) {
@@ -233,6 +235,7 @@ async function fetchDrive(url, options = {}) {
     let accessToken = await getAccessToken();
     const request = (token) => fetch(url, {
         ...options,
+        signal: options.signal || AbortSignal.timeout(20_000),
         headers: { ...(options.headers || {}), Authorization: `Bearer ${token}` }
     });
     let response = await request(accessToken);
@@ -242,6 +245,14 @@ async function fetchDrive(url, options = {}) {
     tokenExpiresAt = 0;
     accessToken = await refreshAccessToken();
     return request(accessToken);
+}
+
+export async function fetchAuthorizedGoogleDriveApi(url, options = {}) {
+    const requestUrl = url instanceof URL ? url : new URL(String(url));
+    const response = await fetchDrive(requestUrl, options);
+    if (response.ok) return response;
+    const data = await response.json().catch(() => ({}));
+    throw classifyDriveResponse(response, data, Boolean(options.method && options.method !== 'GET'));
 }
 
 export async function buildGoogleDriveAuthUrl(state) {
@@ -321,6 +332,9 @@ function classifyDriveResponse(response, data, writeOperation = false) {
     }
     if (response.status === 404) {
         return new GoogleDriveError('DRIVE_FOLDER_NOT_FOUND', 'The requested Google Drive item was not found or is not accessible.', { stage: 'drive-api', httpStatus: 404, providerCode: 'notFound' });
+    }
+    if (response.status === 412) {
+        return new GoogleDriveError('DRIVE_DATA_CONFLICT', 'Google Drive application data changed during this update. Retry the operation.', { stage: 'drive-api', httpStatus: 412, providerCode: 'conditionNotMet' });
     }
     if ((response.status === 403 || response.status === 429) && /rateLimitExceeded|userRateLimitExceeded/i.test(`${providerCode} ${reasons} ${providerMessage}`)) {
         return new GoogleDriveError('DRIVE_RATE_LIMITED', 'Google Drive is receiving too many requests. Wait briefly and try again.', { stage: 'drive-api', httpStatus: response.status, providerCode });
@@ -416,6 +430,7 @@ export async function getGoogleDriveStatus() {
         ok: false,
         success: false,
         provider: 'google-drive',
+        adminAuthConfigured: config.adminAuthConfigured,
         configured: config.configured,
         available: false,
         authenticated: false,
@@ -427,7 +442,9 @@ export async function getGoogleDriveStatus() {
         tokenStorage: {
             configured: config.tokenStorageConfigured,
             durable: config.tokenStorageDurable,
-            provider: config.tokenStorageProvider
+            provider: config.tokenStorageProvider,
+            encryptionKeyConfigured: config.tokenEncryptionKeyConfigured,
+            available: null
         },
         checks
     };
@@ -444,8 +461,12 @@ export async function getGoogleDriveStatus() {
     try {
         token = await getStoredToken();
     } catch (error) {
+        checks.tokenStorage = false;
+        status.tokenStorage.available = false;
         return { ...status, message: error.message, code: error.code || 'DRIVE_TOKEN_STORAGE_FAILED' };
     }
+    checks.tokenStorage = true;
+    status.tokenStorage.available = true;
     if (!token?.refresh_token) {
         return { ...status, message: 'Google Drive authorization is required.', code: 'AUTH_REQUIRED' };
     }
@@ -453,8 +474,8 @@ export async function getGoogleDriveStatus() {
     try {
         const accessToken = await getAccessToken();
         checks.authentication = true;
-        checks.driveApi = true;
         const root = await getRootFolderMetadata(accessToken);
+        checks.driveApi = true;
         checks.rootFolder = true;
         checks.folderAccess = true;
         status.rootFolderName = root.name;

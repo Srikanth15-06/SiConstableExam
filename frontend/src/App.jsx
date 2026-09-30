@@ -7,68 +7,17 @@ import {
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell
 } from 'recharts';
-import { generateQuestions, generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, provisionDriveFolders, uploadDriveFile, getDriveAuthUrl, checkDriveConnection, disconnectDrive, deleteDriveFile, getDriveFileContentUrl, loginDriveAdmin, logoutDriveAdmin } from './services/aiService.js';
-import { calculateTestResult, normalizeAnswer } from './test-results.js';
+import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, provisionDriveFolders, uploadDriveFile, getDriveAuthUrl, checkDriveConnection, disconnectDrive, deleteDriveFile, getDriveFileContentUrl, loginDriveAdmin, logoutDriveAdmin, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, createTestAttempt, submitTestAttempt, saveTestAnswers } from './services/aiService.js';
+import { normalizeAnswer } from './test-results.js';
+import { LEGACY_MEMBERS_STORAGE_KEY, readLegacyMembers, removeImportedLegacyMember } from './legacy-import.js';
+import { SUBJECT_TOPICS } from './syllabus.js';
 import {
   buildPlannerSnapshot,
   calculateSubjectCompletion,
   getPriorityColorClass,
   getProgressColorClass,
-  getStatusColorClass,
-  resolveTopicWeightage
+  getStatusColorClass
 } from './planner-utils.js';
-
-// Syllabus Configuration
-const SUBJECT_TOPICS = {
-  "Arithmetic": [
-    "Percentages", "Profit and Loss", "Simple & Compound Interest",
-    "Time and Work", "Time, Speed and Distance", "Ratio and Proportion",
-    "Average", "Number System & Simplification", "Mixtures and Allegation",
-    "Problems on Ages", "Boats and Streams", "Data Interpretation", "Partnership",
-    "Pipes and Cisterns", "Time and Distance", "HCF and LCM", "Fractions and Decimals",
-    "Number Series", "Mensuration", "Algebra Basics", "Geometry Basics", "Probability Basics",
-    "Permutation and Combination", "Simplification by BODMAS", "Surds and Indices", "Square Roots"
-  ],
-  "Reasoning": [
-    "Coding-Decoding", "Number Series", "Direction Sense",
-    "Analogy", "Blood Relations", "Syllogisms", "Seating Arrangement",
-    "Venn Diagrams", "Non-Verbal Reasoning", "Data Sufficiency", "Calendar and Clock",
-    "Classification", "Odd One Out", "Statement and Conclusions", "Decision Making",
-    "Mathematical Operations", "Logical Sequence", "Missing Number", "Statement and Arguments",
-    "Cause and Effect", "Course of Action", "Input-Output", "Puzzle Test", "Figure Matrix",
-    "Mirror and Water Images", "Paper Folding and Cutting"
-  ],
-  "General Studies": [
-    "Indian Polity", "Indian History", "Indian Geography", "General Science",
-    "Indian Economy", "Environment and Ecology", "Science and Technology", "Current Affairs",
-    "Indian Constitution", "Fundamental Rights and Duties", "Union and State Government",
-    "Local Governance and Panchayati Raj", "Modern Indian History", "Indian National Movement",
-    "Physical Geography", "Indian Rivers and Resources", "Banking and Budget",
-    "Awards, Sports and Important Days", "Parliament and Judiciary", "Constitutional Bodies",
-    "Election System", "Public Policy and Welfare", "Disaster Management", "Climate and Weather",
-    "Agriculture and Food Security", "Population and Census", "International Relations",
-    "Computer Awareness and Cyber Security"
-  ],
-  "Telangana GK": [
-    "Telangana Formation", "Telangana History & Movement",
-    "Telangana Schemes & Projects", "Telangana Culture & Geography", "Telangana Districts",
-    "Telangana Rivers and Irrigation", "Telangana Festivals and Literature", "State Administration",
-    "Kakatiya Dynasty", "Qutb Shahi Dynasty", "Asaf Jahi History", "Telangana Archaeology",
-    "Telangana Art and Handicrafts", "Telangana Tribes and Folk Traditions", "Telangana Economy",
-    "Telangana Agriculture and Industries", "Telangana Welfare Schemes", "Telangana Census and Statistics",
-    "Telangana State Symbols", "Telangana Public Service and Administration", "Telangana Urban Development",
-    "Telangana Irrigation Projects", "Telangana Power Projects", "Telangana Flora and Fauna",
-    "Telangana Important Personalities", "Telangana Literature and Authors"
-  ],
-  "English": [
-    "Grammar & Prepositions", "Vocabulary & Synonyms", "Sentences", "Sentence Correction",
-    "Error Spotting", "Active and Passive Voice", "Direct and Indirect Speech", "Reading Comprehension",
-    "Parts of Speech", "Tenses", "Articles and Conjunctions", "Idioms and Phrases",
-    "Antonyms and One Word Substitution", "Spelling", "Cloze Test", "Subject-Verb Agreement",
-    "Modals and Auxiliaries", "Adverbs and Adjectives", "Punctuation", "Para Jumbles",
-    "Sentence Rearrangement", "Fill in the Blanks", "Commonly Confused Words"
-  ]
-};
 
 const HIGH_WEIGHTAGE_TOPICS = {
   Arithmetic: [
@@ -111,10 +60,6 @@ const getProgressStatus = (value = 0) => {
 };
 
 const TOTAL_TOPICS = Object.values(SUBJECT_TOPICS).reduce((total, topics) => total + topics.length, 0);
-const MEMBERS_STORAGE_KEY = 'ts-police-ai-members-v1';
-const ACTIVE_MEMBER_STORAGE_KEY = 'ts-police-ai-active-member-v1';
-const LEGACY_ACTIVE_MEMBER_STORAGE_KEY = 'ts-police-ai-active-member-email-v1';
-const PLANNER_STORAGE_KEY = 'ts-police-smart-planner-v1';
 const UPCOMING_EXAMS = [
   { id: 'si', name: 'TS SI / SI-equivalent', date: '29 November 2026', weekday: 'Sunday', targetTime: Date.parse('2026-11-29T00:00:00+05:30') },
   { id: 'constable', name: 'TS Constable / PC-equivalent', date: '20 December 2026', weekday: 'Sunday', targetTime: Date.parse('2026-12-20T00:00:00+05:30') }
@@ -129,6 +74,67 @@ function getDriveRootFolderStatus(diagnostics) {
   return 'Unavailable';
 }
 
+function getDriveQueryState() {
+  if (typeof window === 'undefined') return null;
+
+  const params = new URLSearchParams(window.location.search);
+  if (params.get('drive') === 'connected') {
+    window.history.replaceState({}, '', window.location.pathname);
+    return {
+      connected: true,
+      notesError: '',
+      provisionMessage: 'Google Drive connected successfully.',
+      connectionStatus: 'connected',
+      diagnostics: { connected: true, available: true }
+    };
+  }
+
+  if (params.get('drive_error') || params.get('drive') === 'error') {
+    const code = params.get('drive_code') || params.get('drive_error');
+    const errors = {
+      authorization_state_invalid: 'Google Drive authorization could not be verified. Start the connection again.',
+      authorization_cancelled: 'Google Drive authorization was cancelled.',
+      connection_failed: 'Google Drive connection failed. Check the OAuth configuration and try again.',
+      DRIVE_TOKEN_STORAGE_NOT_CONFIGURED: 'Google Drive is not ready yet. Configure Supabase and the Drive token encryption key on the backend.',
+      GOOGLE_REDIRECT_URI_MISMATCH: 'Google Drive callback configuration does not match Google Cloud.',
+      AUTH_REQUIRED: 'Google Drive authorization is required. Connect your Google account.',
+      DRIVE_AUTH_REVOKED: 'Google Drive access was revoked. Connect your Google account again.'
+    };
+
+    window.history.replaceState({}, '', window.location.pathname);
+    return {
+      connected: false,
+      notesError: errors[code] || 'Google Drive connection failed.',
+      provisionMessage: '',
+      connectionStatus: 'error',
+      diagnostics: { code, connected: false, available: false }
+    };
+  }
+
+  return null;
+}
+
+function mergePlannerSnapshot(previousPlanner, member, examType) {
+  if (!member) return previousPlanner || createEmptyPlannerState();
+
+  const nextPlanner = buildPlannerSnapshot(member, examType, SUBJECT_TOPICS);
+  const manualTasks = (previousPlanner?.schedule || []).filter((task) => !task.autoGenerated);
+  const automaticTasks = (nextPlanner.schedule || []).filter((task) => task.autoGenerated);
+  const combined = [...manualTasks, ...automaticTasks].sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
+
+  return {
+    ...nextPlanner,
+    ...(previousPlanner || {}),
+    schedule: combined,
+    summary: {
+      ...nextPlanner.summary,
+      ...(previousPlanner?.summary || {}),
+      todaysTasks: combined.filter((task) => task.date === new Date().toISOString().split('T')[0]).length,
+      upcomingTasks: combined.length
+    }
+  };
+}
+
 const getExamCountdown = (targetTime, now) => {
   const remainingMinutes = Math.max(0, Math.floor((targetTime - now) / 60_000));
   return {
@@ -139,53 +145,11 @@ const getExamCountdown = (targetTime, now) => {
   };
 };
 
-const createMemberId = () => `member_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-
 const normalizeExamForRequest = (exam) => {
   if (exam === 'SI') return 'TS SI';
   if (exam === 'CONSTABLE') return 'TS Constable';
   return exam;
 };
-
-const readStoredMembers = () => {
-  try {
-    const raw = localStorage.getItem(MEMBERS_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch {
-    return {};
-  }
-};
-
-const readActiveMember = () => {
-  if (typeof window === 'undefined') return null;
-  const members = readStoredMembers();
-  const activeMemberId = localStorage.getItem(ACTIVE_MEMBER_STORAGE_KEY);
-  if (activeMemberId && members[activeMemberId]) return members[activeMemberId];
-  const activeEmail = localStorage.getItem(LEGACY_ACTIVE_MEMBER_STORAGE_KEY) || localStorage.getItem(ACTIVE_MEMBER_STORAGE_KEY);
-  if (activeEmail && members[activeEmail]) return members[activeEmail];
-  const fallbackMember = Object.values(members).find((member) => member && member.email && member.email === activeEmail);
-  return fallbackMember || null;
-};
-
-const createEmptyMemberData = (name, email, exam = 'SI') => ({
-  id: createMemberId(),
-  name,
-  email,
-  exam,
-  userProgress: {},
-  testHistory: [],
-  seenQuestionCount: 0,
-  testAttemptCounter: 0,
-  plannerData: {
-    examType: exam,
-    generatedAt: null,
-    summary: {},
-    topicMetrics: [],
-    schedule: []
-  }
-});
 
 const createEmptyPlannerState = (member = null) => ({
   examType: member?.exam || 'SI',
@@ -194,19 +158,6 @@ const createEmptyPlannerState = (member = null) => ({
   topicMetrics: [],
   schedule: []
 });
-
-const hashPassword = async (password, salt) => {
-  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
-  const hash = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt, iterations: 120000, hash: 'SHA-256' }, key, 256);
-  return Array.from(new Uint8Array(hash), (byte) => byte.toString(16).padStart(2, '0')).join('');
-};
-
-const createPasswordSalt = () => {
-  const salt = crypto.getRandomValues(new Uint8Array(16));
-  return { bytes: salt, encoded: Array.from(salt, (byte) => byte.toString(16).padStart(2, '0')).join('') };
-};
-
-const decodePasswordSalt = (encoded) => new Uint8Array(encoded.match(/.{2}/g).map((byte) => Number.parseInt(byte, 16)));
 
 const DIFFICULTY_LEVELS = ["Beginner", "Intermediate", "Expert", "Pro"];
 const LEARNING_STAGES = [
@@ -258,9 +209,14 @@ function getSafeAiMessage(error, fallback) {
 }
 
 export default function App() {
-  const initialMember = readActiveMember();
-  const [currentMember, setCurrentMember] = useState(initialMember);
-  const [plannerData, setPlannerData] = useState(() => initialMember?.plannerData || createEmptyPlannerState(initialMember));
+  const [currentMember, setCurrentMember] = useState(null);
+  const [legacyMembers, setLegacyMembers] = useState([]);
+  const [selectedLegacyMemberId, setSelectedLegacyMemberId] = useState('');
+  const [legacyImportPassword, setLegacyImportPassword] = useState('');
+  const [legacyImportError, setLegacyImportError] = useState('');
+  const [isLegacyImporting, setIsLegacyImporting] = useState(false);
+  const [legacyArchive, setLegacyArchive] = useState(null);
+  const [plannerData, setPlannerData] = useState(() => createEmptyPlannerState());
   const [plannerMonth, setPlannerMonth] = useState(new Date().getMonth());
   const [plannerYear, setPlannerYear] = useState(new Date().getFullYear());
   const [plannerSelectedDate, setPlannerSelectedDate] = useState(new Date().toISOString().split('T')[0]);
@@ -275,19 +231,28 @@ export default function App() {
     notes: '',
     status: 'scheduled'
   });
-  const [isMemberHydrated] = useState(true);
+  const [isMemberHydrated, setIsMemberHydrated] = useState(false);
+  const [accountDataError, setAccountDataError] = useState('');
+  const authLoadSequenceRef = useRef(0);
+  const plannerSaveQueueRef = useRef(Promise.resolve());
+  const answerSaveQueueRef = useRef(Promise.resolve());
+  const plannerHydratedRef = useRef(false);
+  const plannerRevisionRef = useRef(0);
+  const plannerSaveFailedRef = useRef(false);
+  const answerSaveFailedRef = useRef(false);
+  const submissionFailedRef = useRef(false);
 
   // Application View Navigation
-  const [currentView, setCurrentView] = useState(initialMember ? 'dashboard' : 'login'); // 'login', 'signup', 'dashboard', 'topics', 'topic-detail', 'test', 'result', 'ai-tutor', 'profile'
+  const [currentView, setCurrentView] = useState('login'); // 'login', 'signup', 'dashboard', 'topics', 'topic-detail', 'test', 'result', 'ai-tutor', 'profile'
   const [authName, setAuthName] = useState('');
   const [authEmail, setAuthEmail] = useState('');
   const [authPassword, setAuthPassword] = useState('');
   const [authError, setAuthError] = useState('');
   const [isAuthenticating, setIsAuthenticating] = useState(false);
-  const [selectedExam, setSelectedExam] = useState(initialMember?.exam || 'SI'); // 'SI' or 'CONSTABLE'
+  const [selectedExam, setSelectedExam] = useState('SI'); // 'SI' or 'CONSTABLE'
   const [countdownNow, setCountdownNow] = useState(() => Date.now());
-  const [selectedSubject, setSelectedSubject] = useState('');
-  const [selectedTopic, setSelectedTopic] = useState('');
+  const [selectedSubject, setSelectedSubject] = useState(Object.keys(SUBJECT_TOPICS)[0] || '');
+  const [selectedTopic, setSelectedTopic] = useState(SUBJECT_TOPICS[Object.keys(SUBJECT_TOPICS)[0]]?.[0] || '');
   const [showStudyNotes, setShowStudyNotes] = useState(false);
   const [studyNotes, setStudyNotes] = useState(null);
   const [selectedNotesLearningStage, setSelectedNotesLearningStage] = useState('');
@@ -307,13 +272,19 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    const members = readLegacyMembers();
+    setLegacyMembers(members);
+    setSelectedLegacyMemberId(members[0]?.id || '');
+  }, []);
+
   // Global Counter for guaranteed fresh attempt seeds
-  const [testAttemptCounter, setTestAttemptCounter] = useState(initialMember?.testAttemptCounter || 1);
-  const [seenQuestionCount, setSeenQuestionCount] = useState(initialMember?.seenQuestionCount || 20);
+  const [testAttemptCounter, setTestAttemptCounter] = useState(0);
+  const [seenQuestionCount, setSeenQuestionCount] = useState(0);
 
   // User Progression State
-  const [userProgress, setUserProgress] = useState(() => initialMember?.userProgress || {});
-  const [testHistory, setTestHistory] = useState(() => initialMember?.testHistory || []);
+  const [userProgress, setUserProgress] = useState({});
+  const [testHistory, setTestHistory] = useState([]);
 
   // Active Test Engine States
   const [activeTestQuestions, setActiveTestQuestions] = useState([]);
@@ -346,14 +317,15 @@ export default function App() {
   const [driveCurrentSubject, setDriveCurrentSubject] = useState('');
   const [driveCurrentTopic, setDriveCurrentTopic] = useState('');
   const [isDriveNotesLoading, setIsDriveNotesLoading] = useState(false);
-  const [driveNotesError, setDriveNotesError] = useState('');
+  const initialDriveQueryState = useMemo(() => getDriveQueryState(), []);
+  const [driveNotesError, setDriveNotesError] = useState(() => initialDriveQueryState?.notesError ?? '');
   const [isDriveProvisioning, setIsDriveProvisioning] = useState(false);
-  const [driveProvisionMessage, setDriveProvisionMessage] = useState('');
+  const [driveProvisionMessage, setDriveProvisionMessage] = useState(() => initialDriveQueryState?.provisionMessage ?? '');
   const [isDriveUploading, setIsDriveUploading] = useState(false);
   const [driveUploadMessage, setDriveUploadMessage] = useState('');
-  const [isGoogleDriveConnected, setIsGoogleDriveConnected] = useState(false);
-  const [driveConnectionStatus, setDriveConnectionStatus] = useState('checking');
-  const [driveDiagnostics, setDriveDiagnostics] = useState(null);
+  const [isGoogleDriveConnected, setIsGoogleDriveConnected] = useState(() => initialDriveQueryState?.connected ?? false);
+  const [driveConnectionStatus, setDriveConnectionStatus] = useState(() => initialDriveQueryState?.connectionStatus ?? 'checking');
+  const [driveDiagnostics, setDriveDiagnostics] = useState(() => initialDriveQueryState?.diagnostics ?? null);
   const [isDriveAdminAuthorized, setIsDriveAdminAuthorized] = useState(false);
   const [driveAdminKey, setDriveAdminKey] = useState('');
   const [isDriveAdminLoggingIn, setIsDriveAdminLoggingIn] = useState(false);
@@ -364,6 +336,7 @@ export default function App() {
   const driveUploadInputRef = useRef(null);
   const drivePreviewContainerRef = useRef(null);
   const notesDoubtLogRef = useRef(null);
+  const answerSaveTimerRef = useRef(null);
 
   useEffect(() => {
     const syncFullscreenState = () => {
@@ -372,6 +345,27 @@ export default function App() {
     document.addEventListener('fullscreenchange', syncFullscreenState);
     return () => document.removeEventListener('fullscreenchange', syncFullscreenState);
   }, []);
+
+  useEffect(() => {
+    if (currentView !== 'test' || !activeAttemptId) return undefined;
+    const answers = Object.fromEntries(
+      Object.entries(userAnswers).filter(([questionId, answer]) => activeTestQuestions.some((question) => question.id === questionId) && typeof answer === 'string')
+    );
+    answerSaveTimerRef.current = setTimeout(() => {
+      answerSaveQueueRef.current = answerSaveQueueRef.current
+        .catch(() => undefined)
+        .then(() => saveTestAnswers(activeAttemptId, answers))
+        .then(() => {
+          answerSaveFailedRef.current = false;
+          setAccountDataError('');
+        })
+        .catch((error) => {
+          answerSaveFailedRef.current = true;
+          setAccountDataError(error.message || 'Unable to save your answers. Keep this test open and retry.');
+        });
+    }, 350);
+    return () => clearTimeout(answerSaveTimerRef.current);
+  }, [currentView, activeAttemptId, activeTestQuestions, userAnswers]);
 
   useEffect(() => {
     const doubtLog = notesDoubtLogRef.current;
@@ -395,51 +389,37 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    const handleDriveQuery = () => {
-      const params = new URLSearchParams(window.location.search);
-      if (params.get('drive') === 'connected') {
-        setIsGoogleDriveConnected(true);
-        setDriveNotesError('');
-        setDriveProvisionMessage('Google Drive connected successfully.');
-        window.history.replaceState({}, '', window.location.pathname);
-      }
-      if (params.get('drive_error') || params.get('drive') === 'error') {
-        const code = params.get('drive_code') || params.get('drive_error');
-        const errors = {
-          authorization_state_invalid: 'Google Drive authorization could not be verified. Start the connection again.',
-          authorization_cancelled: 'Google Drive authorization was cancelled.',
-          connection_failed: 'Google Drive connection failed. Check the OAuth configuration and try again.',
-          DRIVE_TOKEN_STORAGE_NOT_CONFIGURED: 'Google Drive is not ready yet. Persistent token storage must be configured on the server.',
-          GOOGLE_REDIRECT_URI_MISMATCH: 'Google Drive callback configuration does not match Google Cloud.',
-          AUTH_REQUIRED: 'Google Drive authorization is required. Connect your Google account.',
-          DRIVE_AUTH_REVOKED: 'Google Drive access was revoked. Connect your Google account again.'
-        };
-        setDriveNotesError(errors[code] || 'Google Drive connection failed.');
-        setIsGoogleDriveConnected(false);
-        setDriveConnectionStatus('error');
-        setDriveDiagnostics((previous) => ({ ...previous, code }));
-        window.history.replaceState({}, '', window.location.pathname);
+    let active = true;
+    const requestGeneration = ++authLoadSequenceRef.current;
+    const restoreCandidateSession = async () => {
+      try {
+        const { user } = await getCurrentCandidate();
+        const { data } = await getCurrentCandidateData();
+        if (!active || requestGeneration !== authLoadSequenceRef.current) return;
+        loadMember(user, data);
+      } catch (error) {
+        if (!active || requestGeneration !== authLoadSequenceRef.current) return;
+        if (error.code !== 'AUTH_REQUIRED') {
+          const message = error.message || 'Unable to connect to the server. Please try again.';
+          setAccountDataError(message);
+          setAuthError(message);
+        }
+      } finally {
+        if (active && requestGeneration === authLoadSequenceRef.current) setIsMemberHydrated(true);
       }
     };
-    handleDriveQuery();
+    void restoreCandidateSession();
+    return () => {
+      active = false;
+    };
   }, []);
-
-  useEffect(() => {
-    if (!selectedSubject && Object.keys(SUBJECT_TOPICS).length) {
-      setSelectedSubject(Object.keys(SUBJECT_TOPICS)[0]);
-    }
-    if (selectedSubject && (!selectedTopic || !SUBJECT_TOPICS[selectedSubject]?.includes(selectedTopic))) {
-      const nextTopic = SUBJECT_TOPICS[selectedSubject]?.[0] || '';
-      setSelectedTopic(nextTopic);
-    }
-  }, [selectedSubject, selectedTopic]);
 
   const clearAccountSpecificState = () => {
     setSelectedExam('SI');
     setUserProgress({});
     setTestHistory([]);
     setSeenQuestionCount(0);
-    setTestAttemptCounter(1);
+    setTestAttemptCounter(0);
     setActiveAttemptId(null);
     setCompletedAttempt(null);
     setActiveTestQuestions([]);
@@ -463,75 +443,129 @@ export default function App() {
     setDriveUploadMessage('');
     setDrivePreviewFile(null);
     setPlannerData(createEmptyPlannerState());
+    setLegacyArchive(null);
     setPlannerSelectedDate(new Date().toISOString().split('T')[0]);
   };
 
-  useEffect(() => {
-    if (!currentMember || !isMemberHydrated) return;
+  const plannerViewData = useMemo(() => {
+    if (!currentMember) return plannerData || createEmptyPlannerState();
+    return mergePlannerSnapshot(plannerData, currentMember, selectedExam);
+  }, [currentMember, selectedExam, plannerData]);
 
-    const members = readStoredMembers();
-    const memberRecord = {
-      ...currentMember,
-      exam: selectedExam,
-      userProgress,
-      testHistory,
-      seenQuestionCount,
-      testAttemptCounter,
-      plannerData
-    };
-    members[currentMember.id] = memberRecord;
-    members[currentMember.email] = memberRecord;
-    localStorage.setItem(MEMBERS_STORAGE_KEY, JSON.stringify(members));
-  }, [currentMember, isMemberHydrated, selectedExam, userProgress, testHistory, seenQuestionCount, testAttemptCounter, plannerData]);
-
-  useEffect(() => {
-    if (!currentMember) return;
-    const nextPlanner = buildPlannerSnapshot(currentMember, selectedExam, SUBJECT_TOPICS);
-    setPlannerData((previous) => {
-      const manualTasks = (previous?.schedule || []).filter((task) => !task.autoGenerated);
-      const automaticTasks = (nextPlanner.schedule || []).filter((task) => task.autoGenerated);
-      const combined = [...manualTasks, ...automaticTasks].sort((a, b) => a.date.localeCompare(b.date) || a.startTime.localeCompare(b.startTime));
-      return {
-        ...nextPlanner,
-        schedule: combined,
-        summary: {
-          ...nextPlanner.summary,
-          todaysTasks: combined.filter((task) => task.date === new Date().toISOString().split('T')[0]).length,
-          upcomingTasks: combined.length
+  const savePlannerSnapshot = useEffectEvent(async (snapshot) => {
+    try {
+      const saved = await saveCurrentCandidatePlanner(snapshot, plannerRevisionRef.current);
+      plannerRevisionRef.current = Number(saved.plannerRevision) || plannerRevisionRef.current + 1;
+      plannerSaveFailedRef.current = false;
+      setAccountDataError('');
+    } catch (error) {
+      if (error.code === 'DATA_CONFLICT') {
+        try {
+          const { data } = await getCurrentCandidateData();
+          plannerRevisionRef.current = Number(data.plannerRevision) || 0;
+          plannerSaveFailedRef.current = false;
+          setPlannerData(data.plannerData || createEmptyPlannerState(currentMember));
+          setAccountDataError('Your planner changed on another device. The latest saved version has been loaded.');
+          return;
+        } catch {
+          plannerSaveFailedRef.current = true;
+          setAccountDataError('Your planner changed elsewhere and could not be refreshed. Retry before continuing.');
+          return;
         }
-      };
-    });
-  }, [currentMember, selectedExam, userProgress, testHistory]);
+      }
+      plannerSaveFailedRef.current = true;
+      setAccountDataError(error.message || 'Unable to save your planner. Your current data remains on this screen.');
+    }
+  });
 
-  const loadMember = (member) => {
-    if (!member?.id) return;
-    const plannerSnapshot = member.plannerData || createEmptyPlannerState(member);
+  useEffect(() => {
+    if (!currentMember || !isMemberHydrated || !plannerHydratedRef.current) return;
+    plannerSaveQueueRef.current = plannerSaveQueueRef.current
+      .catch(() => undefined)
+      .then(() => savePlannerSnapshot(plannerViewData));
+  }, [currentMember, isMemberHydrated, plannerViewData]);
+
+  function loadMember(user, data) {
+    if (!user?.userId || !data) return;
+    const member = { ...user, id: user.userId, exam: data.exam || 'SI' };
+    const plannerSnapshot = data.legacyArchive?.verified === false
+      ? createEmptyPlannerState(member)
+      : data.plannerData || createEmptyPlannerState(member);
+    plannerHydratedRef.current = true;
+    plannerRevisionRef.current = Number(data.plannerRevision) || 0;
+    plannerSaveFailedRef.current = false;
+    answerSaveFailedRef.current = false;
+    submissionFailedRef.current = false;
+    setAccountDataError('');
+    setAuthError('');
     setCurrentMember(member);
+    setLegacyArchive(data.legacyArchive || null);
     setPlannerData(plannerSnapshot);
-    setSelectedExam(member.exam || 'SI');
-    setUserProgress(member.userProgress || {});
-    setTestHistory(member.testHistory || []);
-    setSeenQuestionCount(member.seenQuestionCount || 0);
-    setTestAttemptCounter(member.testAttemptCounter || 0);
-    setActiveAttemptId(null);
+    setSelectedExam(data.exam || 'SI');
+    setUserProgress(data.userProgress || {});
+    setTestHistory((data.testHistory || []).map((attempt) => ({ ...attempt, id: attempt.id || attempt.attemptId })));
+    setSeenQuestionCount(Number(data.seenQuestionCount) || 0);
+    setTestAttemptCounter(Number(data.testAttemptCounter) || 0);
+    const activeAttempt = data.activeAttempt?.status === 'in_progress' ? data.activeAttempt : null;
+    setActiveAttemptId(activeAttempt?.attemptId || null);
     setCompletedAttempt(null);
-    setActiveTestQuestions([]);
-    setUserAnswers({});
+    setActiveTestQuestions(activeAttempt?.questions || []);
+    setUserAnswers(activeAttempt?.answers || {});
     setCurrentQuestionIdx(0);
-    setTimeRemaining(600);
-    setCurrentView('dashboard');
-    localStorage.setItem(ACTIVE_MEMBER_STORAGE_KEY, member.id);
-    localStorage.setItem(LEGACY_ACTIVE_MEMBER_STORAGE_KEY, member.email);
+    const elapsed = activeAttempt?.startedAt ? Math.floor((Date.now() - Date.parse(activeAttempt.startedAt)) / 1000) : 0;
+    setTimeRemaining(Math.max(0, 600 - (Number.isFinite(elapsed) ? elapsed : 0)));
+    setSelectedSubject(activeAttempt?.subject || Object.keys(SUBJECT_TOPICS)[0]);
+    setSelectedTopic(activeAttempt?.topic || SUBJECT_TOPICS[Object.keys(SUBJECT_TOPICS)[0]]?.[0] || '');
+    setActiveTestDifficulty(activeAttempt?.difficulty || 'Beginner');
+    setCurrentView(activeAttempt ? 'test' : 'dashboard');
+  }
+
+  const handleChangeExam = async (exam) => {
+    if (!currentMember || !['SI', 'CONSTABLE'].includes(exam) || exam === selectedExam) return;
+    const previousExam = selectedExam;
+    setSelectedExam(exam);
+    try {
+      const { user } = await updateCurrentCandidateProfile({ name: currentMember.name, exam });
+      setCurrentMember((previous) => previous ? { ...previous, ...user, id: previous.id } : previous);
+      setAccountDataError('');
+    } catch (error) {
+      setSelectedExam(previousExam);
+      setAccountDataError(error.message || 'Unable to save your exam preference. Please retry.');
+    }
   };
 
-  const handleLogout = () => {
-    localStorage.removeItem(ACTIVE_MEMBER_STORAGE_KEY);
-    localStorage.removeItem(LEGACY_ACTIVE_MEMBER_STORAGE_KEY);
+  const handleLogout = async () => {
+    if (!currentMember) return;
+    try {
+      clearTimeout(answerSaveTimerRef.current);
+      await plannerSaveQueueRef.current;
+      await answerSaveQueueRef.current;
+      if (currentView === 'test' && activeAttemptId) {
+        const activeQuestionIds = new Set(activeTestQuestions.map((question) => question.id).filter(Boolean));
+        const answers = Object.fromEntries(Object.entries(userAnswers).filter(([questionId]) => activeQuestionIds.has(questionId)));
+        await saveTestAnswers(activeAttemptId, answers);
+        answerSaveFailedRef.current = false;
+      }
+      if (plannerSaveFailedRef.current || answerSaveFailedRef.current) {
+        setAccountDataError('Some changes are not saved yet. Retry saving before signing out.');
+        return;
+      }
+      await logoutCandidate();
+    } catch (error) {
+      setAccountDataError(error.message || 'Unable to sign out. Please try again.');
+      return;
+    }
+    authLoadSequenceRef.current += 1;
+    plannerHydratedRef.current = false;
+    plannerSaveFailedRef.current = false;
+    answerSaveFailedRef.current = false;
+    submissionFailedRef.current = false;
     clearAccountSpecificState();
     setPlannerData(createEmptyPlannerState());
     setCurrentMember(null);
     setAuthPassword('');
     setAuthError('');
+    setAccountDataError('');
     setCurrentView('login');
   };
 
@@ -539,50 +573,71 @@ export default function App() {
     event.preventDefault();
     if (isAuthenticating) return;
 
-    const email = authEmail.trim().toLowerCase();
-    const password = authPassword;
     setAuthError('');
     setIsAuthenticating(true);
 
     try {
-      const members = readStoredMembers();
+      let response;
       if (currentView === 'signup') {
         const name = authName.trim();
         if (!name) throw new Error('Enter your name to create an account.');
-        if (!/^\S+@\S+\.\S+$/.test(email)) throw new Error('Enter a valid email address.');
-        if (password.length < 8) throw new Error('Use a password with at least 8 characters.');
-        const existingMember = Object.values(members).find((member) => member?.email === email);
-        if (existingMember) throw new Error('An account with this email already exists. Sign in instead.');
-
-        const salt = createPasswordSalt();
-        const member = {
-          ...createEmptyMemberData(name, email),
-          passwordSalt: salt.encoded,
-          passwordHash: await hashPassword(password, salt.bytes)
-        };
-        members[member.id] = member;
-        members[member.email] = member;
-        localStorage.setItem(MEMBERS_STORAGE_KEY, JSON.stringify(members));
-        loadMember(member);
+        if (authPassword.length < 8 || authPassword.length > 128) throw new Error('Use a password with 8 to 128 characters.');
+        response = await signUpCandidate({ name, email: authEmail, password: authPassword });
+        setAuthPassword('');
+        setCurrentView('login');
+        setAuthError(response.message || 'Request complete. Sign in to continue.');
+        return;
       } else {
-        const member = Object.values(members).find((candidate) => candidate?.email === email) || members[email];
-        if (!member?.passwordSalt || !member?.passwordHash) {
-          throw new Error('No account found for this email. Check the address or create an account.');
-        }
-        const passwordHash = await hashPassword(password, decodePasswordSalt(member.passwordSalt));
-        if (passwordHash !== member.passwordHash) throw new Error('The email or password is incorrect.');
-        loadMember(member);
+        response = await loginCandidate({ email: authEmail, password: authPassword });
       }
+      const { data } = await getCurrentCandidateData();
+      loadMember(response.user, data);
       setAuthPassword('');
+      setAuthError('');
     } catch (error) {
-      setAuthError(error.message || 'Authentication could not be completed.');
+      setAuthError(error.message || 'Unable to connect to the server. Please try again.');
     } finally {
       setIsAuthenticating(false);
     }
   };
 
+  const handleLegacyImport = async (event) => {
+    event.preventDefault();
+    if (isLegacyImporting) return;
+    const legacyRecord = legacyMembers.find((member) => member.id === selectedLegacyMemberId);
+    if (!legacyRecord) {
+      setLegacyImportError('Select a saved account from this browser.');
+      return;
+    }
+    if (!legacyImportPassword) {
+      setLegacyImportError('Enter the password used by the old account.');
+      return;
+    }
+    setLegacyImportError('');
+    setIsLegacyImporting(true);
+    try {
+      await importLegacyCandidate({ legacyRecord, password: legacyImportPassword });
+      const [{ user }, { data }] = await Promise.all([getCurrentCandidate(), getCurrentCandidateData()]);
+      loadMember(user, data);
+      if (!removeImportedLegacyMember(legacyRecord)) {
+        setLegacyImportError('Your account was imported, but this browser copy could not be removed. Retry import to safely finish cleanup.');
+        return;
+      }
+      const remaining = readLegacyMembers();
+      setLegacyMembers(remaining);
+      setSelectedLegacyMemberId(remaining[0]?.id || '');
+      setLegacyImportPassword('');
+      setLegacyImportError('');
+    } catch (error) {
+      setLegacyImportError(error.message || 'The saved account could not be imported. Your browser copy is unchanged.');
+    } finally {
+      setIsLegacyImporting(false);
+    }
+  };
+
   // Launch a fresh AI-generated test.
   const handleStartTest = async (topic, difficulty) => {
+    if (isGeneratingQuestions) return;
     if (!selectedSubject || !selectedExam || !topic || !difficulty) {
       setQuestionGenerationError('Please select a valid subject, topic, and difficulty before generating questions.');
       return;
@@ -597,22 +652,22 @@ export default function App() {
     submissionInProgressRef.current = false;
     setIsSubmittingTest(false);
 
-    const newSeed = testAttemptCounter + 1;
-    setTestAttemptCounter(newSeed);
-
     try {
-      const fresh10Questions = await generateQuestions({
+      const { attempt } = await createTestAttempt({
         exam: normalizeExamForRequest(selectedExam),
         subject: selectedSubject,
         topic,
-        difficulty,
-        count: 10,
-        attemptSeed: newSeed
+        difficulty
       });
+      if (!attempt?.attemptId || !Array.isArray(attempt.questions) || attempt.questions.length !== 10) {
+        throw new Error('The server returned an invalid test. Please try again.');
+      }
       setQuestionGenerationNotice('Fresh AI-generated questions loaded.');
 
       setSeenQuestionCount(prev => prev + 10);
-      setActiveTestQuestions(fresh10Questions);
+      setTestAttemptCounter((previous) => previous + 1);
+      setActiveAttemptId(attempt.attemptId);
+      setActiveTestQuestions(attempt.questions);
       setUserAnswers({});
       setCurrentQuestionIdx(0);
       setTimeRemaining(600); // 10 minutes
@@ -1082,9 +1137,10 @@ export default function App() {
     }
   };
 
-  const handleFinalSubmitTest = () => {
+  const handleFinalSubmitTest = async () => {
     if (submissionInProgressRef.current) return;
     submissionInProgressRef.current = true;
+    submissionFailedRef.current = false;
     setIsSubmittingTest(true);
     setIsSubmitModalOpen(false);
     let didSubmit = false;
@@ -1096,55 +1152,35 @@ export default function App() {
         return;
       }
 
+      if (!activeAttemptId) throw new Error('This test session is no longer available. Generate a new test.');
+      clearTimeout(answerSaveTimerRef.current);
+      await answerSaveQueueRef.current;
       const activeQuestionIds = new Set(activeTestQuestions.map((question) => question.id).filter(Boolean));
-      const validAnswers = Object.fromEntries(
-        Object.entries(userAnswers).filter(([questionId, answer]) => activeQuestionIds.has(questionId) && typeof answer === 'string')
-      );
-      const result = calculateTestResult(activeTestQuestions, validAnswers);
-      const timeTakenSec = Math.max(0, 600 - (timeRemaining <= 1 ? 0 : timeRemaining));
-      const mins = Math.floor(timeTakenSec / 60);
-      const secs = timeTakenSec % 60;
-      const formattedTime = `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-      const isPassed = result.total === 10 && result.correct >= 8;
-      const nextLevelMap = { Beginner: 'Intermediate', Intermediate: 'Expert', Expert: 'Pro', Pro: 'Pro' };
-      const attemptRecord = {
-        id: `att_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        exam: selectedExam,
-        subject: selectedSubject,
-        topic: selectedTopic,
-        difficulty: activeTestDifficulty,
-        score: result.correct,
-        total: result.total,
-        correct: result.correct,
-        incorrect: result.incorrect,
-        unanswered: result.unanswered,
-        percentage: result.percentage,
-        accuracy: result.accuracy,
-        status: isPassed ? 'LEVEL PASSED' : 'PRACTICE REQUIRED',
-        date: new Date().toISOString().split('T')[0],
-        timeTaken: formattedTime,
-        questions: result.details,
-        answerKey: result.details.map((detail) => ({ questionId: detail.questionId, correctAnswer: detail.correctAnswer }))
-      };
-
-      setTestHistory((previousHistory) => [attemptRecord, ...previousHistory]);
+      const answers = Object.entries(userAnswers)
+        .filter(([questionId, answer]) => activeQuestionIds.has(questionId) && typeof answer === 'string')
+        .map(([questionId, selectedAnswer]) => ({ questionId, selectedAnswer }));
+      const { result } = await submitTestAttempt(activeAttemptId, answers);
+      submissionFailedRef.current = false;
+      answerSaveFailedRef.current = false;
+      const attemptRecord = { ...result, id: result.attemptId };
       setCompletedAttempt(attemptRecord);
-      setActiveAttemptId(attemptRecord.id);
-      setUserProgress((previousProgress) => {
-        const currentStats = previousProgress[selectedTopic] || { level: 'Beginner', bestScore: 0, attempts: 0, accuracy: 0 };
-        const previousAttempts = currentStats.attempts || 0;
-        return {
-          ...previousProgress,
-          [selectedTopic]: {
-            level: isPassed ? nextLevelMap[activeTestDifficulty] : currentStats.level,
-            bestScore: Math.max(currentStats.bestScore || 0, result.correct),
-            attempts: previousAttempts + 1,
-            accuracy: Math.round(((currentStats.accuracy || 0) * previousAttempts + result.accuracy) / (previousAttempts + 1))
-          }
-        };
-      });
+      setTestHistory((previousHistory) => [attemptRecord, ...previousHistory.filter((item) => item.attemptId !== result.attemptId)]);
+      try {
+        const { data } = await getCurrentCandidateData();
+        setUserProgress(data.userProgress || {});
+        setTestHistory((data.testHistory || []).map((attempt) => ({ ...attempt, id: attempt.id || attempt.attemptId })));
+        setSeenQuestionCount(Number(data.seenQuestionCount) || 0);
+        plannerRevisionRef.current = Number(data.plannerRevision) || 0;
+        setPlannerData(data.plannerData || createEmptyPlannerState(currentMember));
+      } catch (error) {
+        setAccountDataError(error.message || 'The result was saved, but refreshed progress could not be loaded. Retry from the dashboard.');
+      }
+      setActiveAttemptId(result.attemptId);
       setCurrentView('result');
       didSubmit = true;
+    } catch (error) {
+      submissionFailedRef.current = true;
+      setAccountDataError(error.message || 'The test could not be submitted. Please retry.');
     } finally {
       if (!didSubmit) submissionInProgressRef.current = false;
       setIsSubmittingTest(false);
@@ -1157,8 +1193,10 @@ export default function App() {
   useEffect(() => {
     if (currentView !== 'test') return undefined;
     if (timeRemaining <= 0) {
-      submitTestOnTimeout();
-      return undefined;
+      const submitTimeout = setTimeout(() => {
+        void submitTestOnTimeout();
+      }, 0);
+      return () => clearTimeout(submitTimeout);
     }
     const timer = setTimeout(() => setTimeRemaining(timeRemaining - 1), 1000);
     return () => clearTimeout(timer);
@@ -1254,7 +1292,7 @@ export default function App() {
   const handleViewAttempt = (attempt) => {
     setCompletedAttempt(attempt);
     setActiveAttemptId(attempt.id);
-    setSelectedExam(attempt.exam || 'SI');
+    void handleChangeExam(attempt.exam || 'SI');
     setSelectedSubject(attempt.subject);
     setSelectedTopic(attempt.topic);
     setActiveTestDifficulty(attempt.difficulty || 'Beginner');
@@ -1313,6 +1351,45 @@ export default function App() {
     });
   };
 
+  const handleRetryCandidateData = async () => {
+    try {
+      if (currentView === 'test' && activeAttemptId) {
+        if (submissionFailedRef.current) {
+          await handleFinalSubmitTest();
+          return;
+        }
+        clearTimeout(answerSaveTimerRef.current);
+        await answerSaveQueueRef.current;
+        const activeQuestionIds = new Set(activeTestQuestions.map((question) => question.id).filter(Boolean));
+        const answers = Object.fromEntries(Object.entries(userAnswers).filter(([questionId]) => activeQuestionIds.has(questionId)));
+        await saveTestAnswers(activeAttemptId, answers);
+        answerSaveFailedRef.current = false;
+        setAccountDataError('');
+        return;
+      }
+      if (currentMember) {
+        const saved = await saveCurrentCandidatePlanner(plannerViewData, plannerRevisionRef.current);
+        plannerRevisionRef.current = Number(saved.plannerRevision) || plannerRevisionRef.current + 1;
+      }
+      const sessionUser = currentMember ? null : (await getCurrentCandidate()).user;
+      const { data } = await getCurrentCandidateData();
+      if (!currentMember) {
+        loadMember(sessionUser, data);
+        return;
+      }
+      plannerRevisionRef.current = Number(data.plannerRevision) || 0;
+      plannerSaveFailedRef.current = false;
+      setUserProgress(data.userProgress || {});
+      setTestHistory((data.testHistory || []).map((attempt) => ({ ...attempt, id: attempt.id || attempt.attemptId })));
+      setSeenQuestionCount(Number(data.seenQuestionCount) || 0);
+      setTestAttemptCounter(Number(data.testAttemptCounter) || 0);
+      setPlannerData(data.plannerData || createEmptyPlannerState(currentMember));
+      setAccountDataError('');
+    } catch (error) {
+      setAccountDataError(error.message || 'Unable to connect to the server. Please try again.');
+    }
+  };
+
   const activeAttemptData = completedAttempt || testHistory.find((item) => item.id === activeAttemptId) || testHistory[0] || null;
   const activeQuestionIds = new Set(activeTestQuestions.map((question) => question.id).filter(Boolean));
   const activeAnswerCount = Object.entries(userAnswers).filter(([questionId, answer]) => activeQuestionIds.has(questionId) && Boolean(answer)).length;
@@ -1361,6 +1438,38 @@ export default function App() {
       .map((section) => ({ ...section, items: Array.isArray(studyNotes[section.key]) ? studyNotes[section.key].filter(Boolean) : [] }))
       .filter((section) => section.items.length > 0)
     : [];
+  const selectedLegacyMember = legacyMembers.find((member) => member.id === selectedLegacyMemberId) || null;
+  const legacyImportPanel = legacyMembers.length > 0 ? (
+    <section aria-labelledby="legacy-import-heading" className="mt-6 border-t border-amber-500/30 pt-5">
+      <h3 id="legacy-import-heading" className="text-sm font-bold text-amber-200">Import an older browser account</h3>
+      <p className="mt-2 text-xs leading-5 text-slate-400">This browser still has saved account data. Choose one account and verify it with its old password. Its history and progress will be archived as unverified, separate from new practice statistics. The browser copy is removed only after import and account reload succeed.</p>
+      {currentMember && <p className="mt-2 text-xs text-slate-300">Signed in as {currentMember.email}. The selected legacy email must match this account.</p>}
+      <form onSubmit={handleLegacyImport} className="mt-4 space-y-3">
+        {legacyMembers.length > 1 ? (
+          <label className="block">
+            <span className="mb-1.5 block text-xs font-semibold text-slate-300">Saved account</span>
+            <select value={selectedLegacyMemberId} onChange={(event) => { setSelectedLegacyMemberId(event.target.value); setLegacyImportError(''); }} className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-white outline-none focus:border-amber-500">
+              {legacyMembers.map((member) => <option key={member.id} value={member.id}>{member.name || 'Candidate'} · {member.email}</option>)}
+            </select>
+          </label>
+        ) : selectedLegacyMember ? (
+          <p className="text-xs text-slate-300">{selectedLegacyMember.name || 'Candidate'} · {selectedLegacyMember.email}</p>
+        ) : null}
+        <label className="block">
+          <span className="mb-1.5 block text-xs font-semibold text-slate-300">Old account password</span>
+          <input type="password" autoComplete="current-password" value={legacyImportPassword} onChange={(event) => setLegacyImportPassword(event.target.value)} required maxLength={128} className="w-full rounded-lg border border-slate-700 bg-slate-950 px-3.5 py-3 text-sm text-white outline-none focus:border-amber-500" placeholder="Password used with the older account" />
+        </label>
+        {legacyImportError && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5 text-xs text-red-300">{legacyImportError}</p>}
+        <button type="submit" disabled={isLegacyImporting || !selectedLegacyMember} className="w-full rounded-lg border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-sm font-bold text-amber-100 transition hover:bg-amber-500/20 disabled:opacity-60">
+          {isLegacyImporting ? 'Verifying and importing...' : 'Import selected account'}
+        </button>
+      </form>
+    </section>
+  ) : null;
+
+  if (!isMemberHydrated) {
+    return <main role="status" className="flex min-h-screen items-center justify-center bg-slate-950 text-sm text-slate-300">Checking your account...</main>;
+  }
 
   if (!currentMember) {
     const isSignup = currentView === 'signup';
@@ -1381,7 +1490,7 @@ export default function App() {
               <h1 className="text-4xl font-bold leading-tight text-white">Build a steadier path to exam day.</h1>
               <p className="mt-4 text-sm leading-6 text-slate-300">Practice topic by topic, track your progress, and get fresh AI-generated question sets.</p>
             </div>
-            <p className="relative text-xs text-slate-500">Your account and progress are saved in this browser.</p>
+            <p className="relative text-xs text-slate-500">Your account and progress sync securely across your devices.</p>
           </section>
 
           <section className="flex items-center justify-center p-6 sm:p-10">
@@ -1416,13 +1525,13 @@ export default function App() {
                   <span className="mb-1.5 block text-xs font-semibold text-slate-300">Password</span>
                   <span className="relative block"><KeyRound className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" /><input type="password" autoComplete={isSignup ? 'new-password' : 'current-password'} minLength={isSignup ? 8 : undefined} value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} required className="w-full rounded-lg border border-slate-700 bg-slate-950 py-3 pl-10 pr-3.5 text-sm text-white outline-none transition focus:border-teal-500" placeholder={isSignup ? 'At least 8 characters' : 'Your password'} /></span>
                 </label>
-                {authError && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5 text-xs text-red-300">{authError}</p>}
+                {(authError || accountDataError) && <p role="alert" className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2.5 text-xs text-red-300">{authError || accountDataError}</p>}
+                {accountDataError && <button type="button" onClick={() => { void handleRetryCandidateData(); }} className="w-full rounded-md border border-amber-500/40 px-3 py-2 text-xs font-semibold text-amber-200 hover:bg-amber-500/10">Retry loading saved account data</button>}
                 <button type="submit" disabled={isAuthenticating} className="flex w-full items-center justify-center gap-2 rounded-lg bg-teal-600 px-4 py-3 text-sm font-bold text-white transition hover:bg-teal-500 disabled:opacity-60">
                   {isSignup ? <UserPlus className="h-4 w-4" /> : <KeyRound className="h-4 w-4" />}
                   {isAuthenticating ? 'Please wait...' : isSignup ? 'Create account' : 'Log in'}
                 </button>
               </form>
-              <p className="mt-5 text-center text-xs text-slate-500">Accounts are stored locally in this browser and do not sync across devices.</p>
             </div>
           </section>
         </div>
@@ -1432,6 +1541,17 @@ export default function App() {
 
   return (
     <div className="min-h-screen w-full min-w-0 max-w-full bg-slate-900 text-slate-100 flex flex-col font-sans">
+      {legacyArchive && <div className="mx-auto mt-3 w-full max-w-5xl border-y border-amber-500/30 bg-amber-950/20 px-4 py-3 text-xs text-amber-100">
+        <p>Older account data is archived separately and marked unverified. It is not included in current practice statistics. Archived history: {legacyArchive.testHistory?.length || 0} tests; progress topics: {Object.keys(legacyArchive.userProgress || {}).length}.</p>
+        {legacyArchive.plannerData && (legacyArchive.plannerData.schedule?.length > 0 || legacyArchive.plannerData.topicMetrics?.length > 0) && (
+          <details className="mt-2">
+            <summary className="cursor-pointer font-semibold">View archived planner ({legacyArchive.plannerData.schedule?.length || 0} tasks)</summary>
+            <div className="mt-2 max-h-48 space-y-2 overflow-y-auto">
+              {(legacyArchive.plannerData.schedule || []).slice(0, 100).map((task) => <p key={task.id} className="text-slate-200">{task.date} · {task.subject} · {task.topic} · {task.reason || task.notes || 'Legacy task'} · Unverified</p>)}
+            </div>
+          </details>
+        )}
+      </div>}
       {/* Top Navigation Bar */}
       <header className="bg-slate-800 border-b border-slate-700 sticky top-0 z-30 flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-3 py-2 sm:px-4 sm:py-3">
         <div className="flex min-w-0 items-center space-x-2 sm:space-x-3">
@@ -1449,14 +1569,14 @@ export default function App() {
         {/* Global Exam Toggle */}
         <div className="order-last flex w-full items-center justify-center space-x-2 rounded-xl border border-slate-700 bg-slate-900/80 p-1 sm:order-none sm:w-auto">
           <button
-            onClick={() => setSelectedExam('SI')}
+            onClick={() => { void handleChangeExam('SI'); }}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${selectedExam === 'SI' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
               }`}
           >
             TS SI
           </button>
           <button
-            onClick={() => setSelectedExam('CONSTABLE')}
+            onClick={() => { void handleChangeExam('CONSTABLE'); }}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${selectedExam === 'CONSTABLE' ? 'bg-blue-600 text-white shadow' : 'text-slate-400 hover:text-slate-200'
               }`}
           >
@@ -1466,6 +1586,19 @@ export default function App() {
 
         {/* Top Header Actions */}
         <div className="ml-auto flex shrink-0 items-center space-x-2">
+          {currentView === 'test' && activeTestQuestions.length > 0 && (
+            <div
+              role="timer"
+              aria-label={`Time remaining ${Math.floor(timeRemaining / 60)} minutes ${timeRemaining % 60} seconds`}
+              className={`flex min-w-[5.5rem] items-center justify-center gap-1.5 rounded-lg border px-2.5 py-2 font-mono text-sm font-bold tabular-nums shadow-inner ${timeRemaining <= 60 ? 'border-rose-500/50 bg-rose-500/10 text-rose-300' : 'border-amber-500/30 bg-slate-900 text-amber-400'}`}
+            >
+              <Clock className="h-4 w-4" />
+              <span>
+                {Math.floor(timeRemaining / 60).toString().padStart(2, '0')}:
+                {(timeRemaining % 60).toString().padStart(2, '0')}
+              </span>
+            </div>
+          )}
           <div className="hidden lg:flex items-center gap-2 px-3 py-1.5 bg-slate-900/70 border border-slate-700 rounded-lg">
             <div className="w-6 h-6 rounded-full bg-teal-500/20 text-teal-300 flex items-center justify-center text-[10px] font-black">
               {currentMember.name.slice(0, 2).toUpperCase()}
@@ -1585,6 +1718,12 @@ export default function App() {
 
         {/* Content View Router */}
         <main className="flex-1 overflow-y-auto p-4 md:p-6 bg-slate-900">
+          {accountDataError && (
+            <div role="alert" className="mx-auto mb-4 flex max-w-6xl flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+              <span>{accountDataError}</span>
+              <button type="button" onClick={() => { void handleRetryCandidateData(); }} className="rounded-md border border-amber-400/40 px-3 py-1.5 text-xs font-semibold hover:bg-amber-400/10">Retry</button>
+            </div>
+          )}
           {/* DASHBOARD VIEW */}
           {currentView === 'dashboard' && (
             <div className="max-w-6xl mx-auto space-y-6">
@@ -1596,7 +1735,7 @@ export default function App() {
                   </div>
                   <h2 className="text-2xl md:text-3xl font-bold text-white">Welcome, {currentMember.name}!</h2>
                   <p className="text-slate-300 text-sm mt-1 max-w-2xl">
-                    Targeting <span className="text-blue-400 font-bold">Telangana {selectedExam}</span>. Your marks, attempts, and topic progress are saved to this member profile.
+                    Targeting <span className="text-blue-400 font-bold">Telangana {selectedExam}</span>. Your progress and test history are saved to your account.
                   </p>
                 </div>
               </div>
@@ -1628,33 +1767,33 @@ export default function App() {
                   <div className="flex items-center justify-between">
                     <div>
                       <p className="text-xs font-bold uppercase tracking-[0.2em] text-teal-300">Smart Preparation</p>
-                      <h3 className="mt-2 text-xl font-bold text-white">Overall Progress {plannerData?.summary?.overallProgress ?? 0}%</h3>
+                      <h3 className="mt-2 text-xl font-bold text-white">Overall Progress {plannerViewData?.summary?.overallProgress ?? 0}%</h3>
                     </div>
                     <button onClick={() => setCurrentView('planner')} className="rounded-lg border border-teal-500/40 bg-teal-500/10 px-3 py-2 text-xs font-bold text-teal-200 hover:bg-teal-500/20">View Full Planner</button>
                   </div>
                   <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-3">
                     <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-3">
                       <p className="text-[11px] text-slate-400">Syllabus Completed</p>
-                      <p className="mt-2 text-xl font-black text-white">{plannerData?.summary?.syllabusCompletion ?? 0}%</p>
+                      <p className="mt-2 text-xl font-black text-white">{plannerViewData?.summary?.syllabusCompletion ?? 0}%</p>
                     </div>
                     <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-3">
                       <p className="text-[11px] text-slate-400">Tests Attempted</p>
-                      <p className="mt-2 text-xl font-black text-white">{plannerData?.summary?.testsAttempted ?? testHistory.length}</p>
+                      <p className="mt-2 text-xl font-black text-white">{plannerViewData?.summary?.testsAttempted ?? testHistory.length}</p>
                     </div>
                     <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-3">
                       <p className="text-[11px] text-slate-400">Average Accuracy</p>
-                      <p className="mt-2 text-xl font-black text-emerald-300">{plannerData?.summary?.averageAccuracy ?? 0}%</p>
+                      <p className="mt-2 text-xl font-black text-emerald-300">{plannerViewData?.summary?.averageAccuracy ?? 0}%</p>
                     </div>
                     <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-3">
                       <p className="text-[11px] text-slate-400">Days Remaining</p>
-                      <p className="mt-2 text-xl font-black text-blue-300">{plannerData?.summary?.daysRemaining ?? 0}</p>
+                      <p className="mt-2 text-xl font-black text-blue-300">{plannerViewData?.summary?.daysRemaining ?? 0}</p>
                     </div>
                   </div>
                 </div>
                 <div className="rounded-2xl border border-slate-700 bg-slate-800/80 p-5">
                   <p className="text-xs font-bold uppercase tracking-[0.2em] text-teal-300">Today&apos;s Plan</p>
                   <div className="mt-4 space-y-3">
-                    {(plannerData?.schedule || []).filter((task) => task.date === new Date().toISOString().split('T')[0]).slice(0, 3).map((task) => (
+                    {(plannerViewData?.schedule || []).filter((task) => task.date === new Date().toISOString().split('T')[0]).slice(0, 3).map((task) => (
                       <div key={task.id} className="rounded-xl border border-slate-700 bg-slate-900/70 p-3">
                         <div className="flex items-center justify-between gap-2">
                           <p className="text-sm font-bold text-white">{task.subject}</p>
@@ -1727,7 +1866,7 @@ export default function App() {
                     return (
                       <div
                         key={subj}
-                        onClick={() => { setSelectedSubject(subj); setCurrentView('topics'); }}
+                        onClick={() => { setSelectedSubject(subj); setSelectedTopic(SUBJECT_TOPICS[subj]?.[0] || ''); setCurrentView('topics'); }}
                         className={`rounded-xl border p-4 shadow-md transition cursor-pointer group ${subjectMetric.colorClass} hover:border-blue-500`}
                       >
                         <div className="flex justify-between items-center mb-2">
@@ -1789,11 +1928,11 @@ export default function App() {
 
               <div className="grid grid-cols-2 xl:grid-cols-5 gap-3">
                 {[
-                  { label: 'Overall Progress', value: `${plannerData?.summary?.overallProgress ?? 0}%` },
-                  { label: 'Syllabus Completion', value: `${plannerData?.summary?.syllabusCompletion ?? 0}%` },
-                  { label: 'Tests Attempted', value: plannerData?.summary?.testsAttempted ?? testHistory.length },
-                  { label: 'Average Accuracy', value: `${plannerData?.summary?.averageAccuracy ?? 0}%` },
-                  { label: 'Critical Topics', value: plannerData?.summary?.criticalTopics ?? 0 }
+                  { label: 'Overall Progress', value: `${plannerViewData?.summary?.overallProgress ?? 0}%` },
+                  { label: 'Syllabus Completion', value: `${plannerViewData?.summary?.syllabusCompletion ?? 0}%` },
+                  { label: 'Tests Attempted', value: plannerViewData?.summary?.testsAttempted ?? testHistory.length },
+                  { label: 'Average Accuracy', value: `${plannerViewData?.summary?.averageAccuracy ?? 0}%` },
+                  { label: 'Critical Topics', value: plannerViewData?.summary?.criticalTopics ?? 0 }
                 ].map((metric) => (
                   <div key={metric.label} className="rounded-xl border border-slate-700 bg-slate-800/80 p-4">
                     <p className="text-[11px] uppercase tracking-[0.2em] text-slate-400">{metric.label}</p>
@@ -1823,7 +1962,7 @@ export default function App() {
                           </tr>
                         </thead>
                         <tbody>
-                          {(plannerData?.topicMetrics || []).map((metric) => (
+                          {(plannerViewData?.topicMetrics || []).map((metric) => (
                             <tr key={`${metric.subject}-${metric.topic}`} className="border-b border-slate-800 text-slate-300">
                               <td className="py-3 pl-3 pr-3"><div className="font-semibold text-white">{metric.topic}</div><div className="text-[10px] text-slate-400">{metric.subject}</div></td>
                               <td className="py-3 pr-3">{metric.weightage}</td>
@@ -1913,10 +2052,10 @@ export default function App() {
                 <div className="rounded-2xl border border-slate-700 bg-slate-800/80 p-5">
                   <div className="flex items-center justify-between">
                     <h3 className="text-lg font-bold text-white">Generated schedule</h3>
-                    <span className="text-xs text-slate-400">{(plannerData?.schedule || []).length} tasks</span>
+                    <span className="text-xs text-slate-400">{(plannerViewData?.schedule || []).length} tasks</span>
                   </div>
                   <div className="mt-4 space-y-3">
-                    {(plannerData?.schedule || []).slice(0, 8).map((task) => (
+                    {(plannerViewData?.schedule || []).slice(0, 8).map((task) => (
                       <div key={task.id} className="rounded-xl border border-slate-700 bg-slate-900/70 p-3">
                         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                           <div>
@@ -1955,7 +2094,7 @@ export default function App() {
                       dayPointer.setDate(1 - firstDayOfMonth.getDay() + index);
                       const dateKey = dayPointer.toISOString().split('T')[0];
                       const isCurrentMonth = dayPointer.getMonth() === plannerMonth;
-                      const dateTasks = (plannerData?.schedule || []).filter((task) => task.date === dateKey);
+                      const dateTasks = (plannerViewData?.schedule || []).filter((task) => task.date === dateKey);
                       return (
                         <button key={dateKey + index} type="button" onClick={() => setPlannerSelectedDate(dateKey)} className={`min-h-16 rounded-lg border p-1 text-left ${isCurrentMonth ? 'border-slate-700 bg-slate-900/70' : 'border-slate-800 bg-slate-950/30'} ${plannerSelectedDate === dateKey ? 'border-teal-500/40 ring-1 ring-teal-500/30' : ''}`}>
                           <span className={`text-[10px] font-semibold ${isCurrentMonth ? 'text-slate-200' : 'text-slate-500'}`}>{dayPointer.getDate()}</span>
@@ -1972,7 +2111,7 @@ export default function App() {
                     <p className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">Selected day</p>
                     <p className="mt-2 text-sm font-bold text-white">{plannerSelectedDate}</p>
                     <div className="mt-3 space-y-2">
-                      {((plannerData?.schedule || []).filter((task) => task.date === plannerSelectedDate).length ? (plannerData?.schedule || []).filter((task) => task.date === plannerSelectedDate) : []).map((task) => (
+                      {((plannerViewData?.schedule || []).filter((task) => task.date === plannerSelectedDate).length ? (plannerViewData?.schedule || []).filter((task) => task.date === plannerSelectedDate) : []).map((task) => (
                         <div key={task.id} className="rounded-lg border border-slate-700 bg-slate-800 p-2">
                           <div className="flex items-center justify-between gap-2">
                             <p className="text-xs font-bold text-white">{task.topic}</p>
@@ -2000,7 +2139,7 @@ export default function App() {
                   {Object.keys(SUBJECT_TOPICS).map(subj => (
                     <button
                       key={subj}
-                      onClick={() => { setSelectedSubject(subj); setCurrentView('topics'); }}
+                      onClick={() => { setSelectedSubject(subj); setSelectedTopic(SUBJECT_TOPICS[subj]?.[0] || ''); setCurrentView('topics'); }}
                       className={`px-3 py-1.5 rounded-lg text-xs font-bold whitespace-nowrap transition ${selectedSubject === subj ? 'bg-blue-600 text-white' : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
                         }`}
                     >
@@ -2460,13 +2599,6 @@ export default function App() {
                   </h3>
                 </div>
 
-                <div className="flex items-center space-x-2 bg-slate-900 px-4 py-2 rounded-xl border border-slate-700 text-amber-400 font-mono font-bold text-base shadow-inner">
-                  <Clock className="w-4 h-4 animate-pulse" />
-                  <span>
-                    {Math.floor(timeRemaining / 60).toString().padStart(2, '0')}:
-                    {(timeRemaining % 60).toString().padStart(2, '0')}
-                  </span>
-                </div>
               </div>
               {questionGenerationNotice && (
                 <p className="text-xs text-teal-300 bg-teal-500/10 border border-teal-500/20 rounded-lg px-3 py-2">
@@ -2801,7 +2933,7 @@ export default function App() {
                   <p className="mt-3 border-t border-slate-700 pt-3 text-xs text-amber-200">Drive management is disabled. Set <code>GOOGLE_DRIVE_ADMIN_KEY</code> in the backend Render service, then redeploy.</p>
                 )}
                 {driveDiagnostics && driveDiagnostics.tokenStorage?.configured === false && (
-                  <p className="mt-3 border-t border-slate-700 pt-3 text-xs text-amber-200">Drive cannot connect until durable token storage is configured on the backend: <code>DATABASE_URL</code>, a persistent <code>GOOGLE_DRIVE_TOKEN_FILE</code>, or <code>GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON</code>.</p>
+                  <p className="mt-3 border-t border-slate-700 pt-3 text-xs text-amber-200">Drive cannot connect until the backend has Supabase token storage and <code>GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY</code> configured for the existing Notes Library root.</p>
                 )}
                 {driveDiagnostics?.adminAuthConfigured && !isDriveAdminAuthorized && (
                   <form onSubmit={handleDriveAdminLogin} className="mt-3 flex flex-col gap-2 border-t border-slate-700 pt-3 sm:flex-row sm:items-end">

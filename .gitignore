@@ -8,5 +8,13 @@ secrets/
 *.enc
 *.key
 *.pem
+credentials.json
+google-credentials*.json
+client_secret*.json
+token.json
+*-service-account*.json
+service-account*.json
+google-drive-token*.json
+google-oauth-token*.json
 node_modules/
 frontend/dist/

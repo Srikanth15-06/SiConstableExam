@@ -2,13 +2,11 @@ import { createCipheriv, createDecipheriv, randomBytes, randomUUID } from 'node:
 import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { google } from 'googleapis';
-import { Pool } from 'pg';
+import { getSupabaseClient, isSupabaseConfigured } from './supabase-client.mjs';
 
-const TOKEN_PROVIDER = 'google-drive';
 const TOKEN_VAULT_FILE_NAME = '.ts-constable-drive-oauth-token.enc';
+const TOKEN_PROVIDER = 'google-drive';
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
-let pool;
-let tableReady;
 let vaultAuth;
 
 function getEncryptionKey() {
@@ -30,6 +28,10 @@ function getTokenFilePath() {
 
 function getDriveRootFolderId() {
     return (process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID || process.env.ROOT_FOLDER_ID || '').trim();
+}
+
+function isRenderEnvironment() {
+    return process.env.RENDER === 'true' || Boolean(process.env.RENDER_SERVICE_ID);
 }
 
 function getVaultServiceAccount() {
@@ -56,8 +58,8 @@ export function getGoogleDriveTokenStorageStatus() {
     } catch {
         encryptionKeyConfigured = false;
     }
-    if (process.env.DATABASE_URL?.trim()) {
-        return { configured: encryptionKeyConfigured, durable: true, provider: 'postgres', encryptionKeyConfigured };
+    if (isSupabaseConfigured()) {
+        return { configured: encryptionKeyConfigured, durable: true, provider: 'supabase-encrypted', encryptionKeyConfigured };
     }
     if (isDriveVaultConfigured()) {
         return { configured: encryptionKeyConfigured, durable: true, provider: 'google-drive-vault', encryptionKeyConfigured };
@@ -65,11 +67,12 @@ export function getGoogleDriveTokenStorageStatus() {
     const tokenFilePath = process.env.GOOGLE_DRIVE_TOKEN_FILE?.trim();
     const mountedFile = tokenFilePath?.replace(/\\/g, '/').startsWith('/var/data/');
     const explicitlyDurable = process.env.GOOGLE_DRIVE_TOKEN_FILE_DURABLE === 'true';
-    const localDevelopment = process.env.NODE_ENV !== 'production';
+    const localDevelopment = process.env.NODE_ENV !== 'production' && !isRenderEnvironment();
+    const fileDurable = localDevelopment && Boolean(tokenFilePath && (mountedFile || explicitlyDurable));
     return {
-        configured: encryptionKeyConfigured && (localDevelopment || Boolean(tokenFilePath && (mountedFile || explicitlyDurable))),
-        durable: localDevelopment || Boolean(tokenFilePath && (mountedFile || explicitlyDurable)),
-        provider: 'encrypted-file',
+        configured: encryptionKeyConfigured && localDevelopment,
+        durable: fileDurable,
+        provider: localDevelopment ? 'encrypted-file-development' : 'unconfigured',
         encryptionKeyConfigured
     };
 }
@@ -93,37 +96,6 @@ function decryptToken(envelope) {
         decipher.final()
     ]).toString('utf8');
     return JSON.parse(plaintext);
-}
-
-function getPool() {
-    if (!pool) {
-        pool = new Pool({
-            connectionString: process.env.DATABASE_URL,
-            ...(process.env.DATABASE_SSL === 'true'
-                ? { ssl: { rejectUnauthorized: process.env.DATABASE_SSL_REJECT_UNAUTHORIZED !== 'false' } }
-                : {})
-        });
-    }
-    return pool;
-}
-
-async function ensureDatabaseTable() {
-    if (!tableReady) {
-        tableReady = getPool().query(`
-            CREATE TABLE IF NOT EXISTS google_drive_oauth_tokens (
-                provider TEXT PRIMARY KEY,
-                token_ciphertext JSONB NOT NULL,
-                expires_at BIGINT,
-                scope TEXT,
-                token_type TEXT,
-                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            )
-        `).catch((error) => {
-            tableReady = null;
-            throw error;
-        });
-    }
-    await tableReady;
 }
 
 function getVaultAuth() {
@@ -157,12 +129,13 @@ async function fetchDriveVault(url, options = {}, isList = false, accessTokenOve
         if (!accessToken) throw new Error('missing access token');
         const response = await fetch(vaultRequestUrl(url, isList), {
             ...options,
+            signal: options.signal || AbortSignal.timeout(15_000),
             headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` }
         });
         if (!response.ok) throw new Error('Drive API request failed');
         return response;
     } catch {
-        const error = new Error('The encrypted Drive token vault is unavailable. Verify that its service account can access the configured root folder.');
+        const error = new Error('The encrypted Drive token vault is unavailable. Verify the service-account credentials, enable the Drive API, and grant it access to the vault file only; do not share the root folder.');
         error.code = 'DRIVE_TOKEN_STORAGE_FAILED';
         throw error;
     }
@@ -260,6 +233,31 @@ async function deleteDriveVaultToken() {
     }
 }
 
+async function readSupabaseToken() {
+    const { data, error } = await getSupabaseClient()
+        .from('drive_oauth_tokens')
+        .select('encrypted_payload')
+        .eq('provider', TOKEN_PROVIDER)
+        .maybeSingle();
+    if (error) throw error;
+    return data ? decryptToken(data.encrypted_payload) : null;
+}
+
+async function writeSupabaseToken(envelope) {
+    const { error } = await getSupabaseClient()
+        .from('drive_oauth_tokens')
+        .upsert({ provider: TOKEN_PROVIDER, encrypted_payload: envelope, updated_at: new Date().toISOString() }, { onConflict: 'provider' });
+    if (error) throw error;
+}
+
+async function deleteSupabaseToken() {
+    const { error } = await getSupabaseClient()
+        .from('drive_oauth_tokens')
+        .delete()
+        .eq('provider', TOKEN_PROVIDER);
+    if (error) throw error;
+}
+
 export async function getStoredGoogleDriveToken() {
     if (process.env.GOOGLE_DRIVE_TOKEN && process.env.NODE_ENV !== 'production') {
         try {
@@ -272,22 +270,22 @@ export async function getStoredGoogleDriveToken() {
     }
 
     try {
-        if (process.env.DATABASE_URL?.trim()) {
-            await ensureDatabaseTable();
-            const result = await getPool().query(
-                'SELECT token_ciphertext FROM google_drive_oauth_tokens WHERE provider = $1',
-                [TOKEN_PROVIDER]
-            );
-            return result.rows[0] ? decryptToken(result.rows[0].token_ciphertext) : null;
-        }
+        if (isSupabaseConfigured()) return await readSupabaseToken();
         if (isDriveVaultConfigured()) return await readDriveVaultToken();
-
+        if (isRenderEnvironment() || process.env.NODE_ENV === 'production') {
+            const error = new Error('Configure Supabase token storage before connecting Google Drive in production.');
+            error.code = 'DRIVE_TOKEN_STORAGE_NOT_CONFIGURED';
+            throw error;
+        }
         const envelope = JSON.parse(await readFile(getTokenFilePath(), 'utf8'));
         return decryptToken(envelope);
     } catch (error) {
         if (error.code === 'ENOENT') return null;
         if (error.code === 'MISSING_DRIVE_TOKEN_ENCRYPTION_KEY' || error.code === 'DRIVE_TOKEN_STORAGE_FAILED') throw error;
-        const storageError = new Error('The saved Google Drive authorization could not be read. Check database access or the token encryption key, then reconnect if needed.');
+        const message = isDriveVaultConfigured()
+            ? 'The encrypted Drive token vault could not be read. Verify GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY is unchanged and the service account can access the vault file.'
+            : 'The saved Google Drive authorization could not be read. Check configured storage access or the token encryption key, then reconnect if needed.';
+        const storageError = new Error(message);
         storageError.code = 'DRIVE_TOKEN_STORAGE_FAILED';
         throw storageError;
     }
@@ -296,42 +294,39 @@ export async function getStoredGoogleDriveToken() {
 export async function storeGoogleDriveToken(token) {
     const envelope = encryptToken(token);
     try {
-        if (process.env.DATABASE_URL?.trim()) {
-            await ensureDatabaseTable();
-            await getPool().query(`
-                INSERT INTO google_drive_oauth_tokens (provider, token_ciphertext, expires_at, scope, token_type, updated_at)
-                VALUES ($1, $2::jsonb, $3, $4, $5, NOW())
-                ON CONFLICT (provider) DO UPDATE SET
-                    token_ciphertext = EXCLUDED.token_ciphertext,
-                    expires_at = EXCLUDED.expires_at,
-                    scope = EXCLUDED.scope,
-                    token_type = EXCLUDED.token_type,
-                    updated_at = NOW()
-            `, [TOKEN_PROVIDER, JSON.stringify(envelope), token.expiry || null, token.scope || null, token.token_type || null]);
+        if (isSupabaseConfigured()) {
+            await writeSupabaseToken(envelope);
             return;
         }
         if (isDriveVaultConfigured()) {
             await writeDriveVaultToken(envelope, token.access_token);
             return;
         }
-
+        if (isRenderEnvironment() || process.env.NODE_ENV === 'production') {
+            const error = new Error('Configure Supabase token storage before connecting Google Drive in production.');
+            error.code = 'DRIVE_TOKEN_STORAGE_NOT_CONFIGURED';
+            throw error;
+        }
         const tokenFilePath = getTokenFilePath();
         await mkdir(path.dirname(tokenFilePath), { recursive: true });
         const temporaryPath = `${tokenFilePath}.${randomUUID()}.tmp`;
         await writeFile(temporaryPath, JSON.stringify(envelope), { mode: 0o600 });
         await rename(temporaryPath, tokenFilePath);
     } catch (error) {
-        if (error.code === 'MISSING_DRIVE_TOKEN_ENCRYPTION_KEY') throw error;
-        const storageError = new Error('The Google Drive authorization could not be saved. Check database access or persistent token-file storage.');
+        if (error.code === 'MISSING_DRIVE_TOKEN_ENCRYPTION_KEY' || error.code === 'DRIVE_TOKEN_STORAGE_FAILED') throw error;
+        const message = isDriveVaultConfigured()
+            ? 'The encrypted Drive token vault could not be written. Verify the service-account credentials and its direct writer access to the vault file; do not share the root folder.'
+            : 'The Google Drive authorization could not be saved. Check configured storage access.';
+        const storageError = new Error(message);
         storageError.code = 'DRIVE_TOKEN_STORAGE_FAILED';
+        storageError.cause = error;
         throw storageError;
     }
 }
 
 export async function clearStoredGoogleDriveToken() {
-    if (process.env.DATABASE_URL?.trim()) {
-        await ensureDatabaseTable();
-        await getPool().query('DELETE FROM google_drive_oauth_tokens WHERE provider = $1', [TOKEN_PROVIDER]);
+    if (isSupabaseConfigured()) {
+        await deleteSupabaseToken();
         return;
     }
     if (isDriveVaultConfigured()) {
