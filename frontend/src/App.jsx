@@ -7,7 +7,7 @@ import {
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell
 } from 'recharts';
-import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, provisionDriveFolders, uploadDriveFile, getDriveAuthUrl, checkDriveConnection, disconnectDrive, deleteDriveFile, getDriveFileContentUrl, loginDriveAdmin, logoutDriveAdmin, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, createTestAttempt, submitTestAttempt, saveTestAnswers } from './services/aiService.js';
+import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, provisionDriveFolders, uploadDriveFile, getDriveAuthUrl, checkDriveConnection, disconnectDrive, deleteDriveFile, getDriveFileContentUrl, logoutDriveAdmin, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, createTestAttempt, submitTestAttempt, saveTestAnswers } from './services/aiService.js';
 import { normalizeAnswer } from './test-results.js';
 import { LEGACY_MEMBERS_STORAGE_KEY, readLegacyMembers, removeImportedLegacyMember } from './legacy-import.js';
 import { SUBJECT_TOPICS } from './syllabus.js';
@@ -327,8 +327,6 @@ export default function App() {
   const [driveConnectionStatus, setDriveConnectionStatus] = useState(() => initialDriveQueryState?.connectionStatus ?? 'checking');
   const [driveDiagnostics, setDriveDiagnostics] = useState(() => initialDriveQueryState?.diagnostics ?? null);
   const [isDriveAdminAuthorized, setIsDriveAdminAuthorized] = useState(false);
-  const [driveAdminKey, setDriveAdminKey] = useState('');
-  const [isDriveAdminLoggingIn, setIsDriveAdminLoggingIn] = useState(false);
   const [driveDeletingFileId, setDriveDeletingFileId] = useState('');
   const [drivePreviewFile, setDrivePreviewFile] = useState(null);
   const [isDrivePreviewFullscreen, setIsDrivePreviewFullscreen] = useState(false);
@@ -951,32 +949,6 @@ export default function App() {
     } catch (error) {
       setDriveConnectionStatus('error');
       setDriveNotesError(error.message || 'Google Drive could not be refreshed.');
-    }
-  };
-
-  const handleDriveAdminLogin = async (event) => {
-    event.preventDefault();
-    if (!driveAdminKey || isDriveAdminLoggingIn) return;
-    setIsDriveAdminLoggingIn(true);
-    setDriveNotesError('');
-    try {
-      await loginDriveAdmin(driveAdminKey);
-      setDriveAdminKey('');
-      const status = await checkDriveConnection();
-      setDriveDiagnostics(status);
-      setIsDriveAdminAuthorized(Boolean(status.adminAuthorized));
-      setIsGoogleDriveConnected(Boolean(status.connected));
-      setDriveConnectionStatus(status.available ? 'connected' : status.connected ? 'error' : status.code && !['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED'].includes(status.code) ? 'error' : 'not-connected');
-      if (status.available && status.rootFolderId) {
-        setDriveRootFolderId(status.rootFolderId);
-        await loadDriveFolder(status.rootFolderId, [{ id: status.rootFolderId, name: 'Subjects' }]);
-      } else if (status.message) {
-        setDriveNotesError(status.message);
-      }
-    } catch (error) {
-      setDriveNotesError(error.message || 'Administrator access could not be verified.');
-    } finally {
-      setIsDriveAdminLoggingIn(false);
     }
   };
 
@@ -2929,29 +2901,8 @@ export default function App() {
                   <span className="text-slate-400">Files: <span className="text-slate-200">{driveCurrentFiles.length}</span></span>
                   {driveDiagnostics?.message && driveConnectionStatus !== 'connected' && <span className="basis-full text-xs text-slate-400">{driveDiagnostics.message}</span>}
                 </div>
-                {driveDiagnostics && !driveDiagnostics.adminAuthConfigured && (
-                  <p className="mt-3 border-t border-slate-700 pt-3 text-xs text-amber-200">Drive management is disabled. Set <code>GOOGLE_DRIVE_ADMIN_KEY</code> in the backend Render service, then redeploy.</p>
-                )}
                 {driveDiagnostics && driveDiagnostics.tokenStorage?.configured === false && (
                   <p className="mt-3 border-t border-slate-700 pt-3 text-xs text-amber-200">Drive cannot connect until the backend has Supabase token storage and <code>GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY</code> configured for the existing Notes Library root.</p>
-                )}
-                {driveDiagnostics?.adminAuthConfigured && !isDriveAdminAuthorized && (
-                  <form onSubmit={handleDriveAdminLogin} className="mt-3 flex flex-col gap-2 border-t border-slate-700 pt-3 sm:flex-row sm:items-end">
-                    <label className="min-w-0 flex-1 text-xs font-semibold text-slate-300" htmlFor="drive-admin-key">
-                      Notes Library administrator key
-                      <input
-                        id="drive-admin-key"
-                        type="password"
-                        autoComplete="current-password"
-                        value={driveAdminKey}
-                        onChange={(event) => setDriveAdminKey(event.target.value)}
-                        className="mt-1 w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-teal-500"
-                      />
-                    </label>
-                    <button type="submit" disabled={!driveAdminKey || isDriveAdminLoggingIn} className="rounded-md bg-slate-700 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-600 disabled:opacity-50">
-                      {isDriveAdminLoggingIn ? 'Verifying...' : 'Unlock management'}
-                    </button>
-                  </form>
                 )}
                 <details className="mt-3 border-t border-slate-700 pt-3 text-xs text-slate-400">
                   <summary className="cursor-pointer font-semibold text-slate-300">Technical details</summary>

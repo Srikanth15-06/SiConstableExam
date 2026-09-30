@@ -86,7 +86,7 @@ npm install
 npm install --prefix frontend
 ```
 
-Create a local `.env` from `.env.example` for backend configuration. Apply the SQL migration in `supabase/migrations/` to a fresh Supabase project, then configure its URL and service-role key only on the backend. Add provider keys/models as needed; AI providers and Google Drive Notes are optional for account persistence.
+Configure the ignored repository-root `.env` file for backend settings. Do not commit it. Apply the SQL migration in `supabase/migrations/` to a fresh Supabase project, then configure its URL and service-role key only on the backend. Add provider keys/models as needed; AI providers and Google Drive Notes are optional for account persistence.
 
 Open two terminals in the repository root:
 
