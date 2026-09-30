@@ -2753,7 +2753,13 @@ export default function App() {
                   </div>
                   <span className="text-slate-400">Root Folder: <span className={driveDiagnostics?.rootFolderAccessible ? 'text-emerald-300' : 'text-slate-300'}>{getDriveRootFolderStatus(driveDiagnostics)}</span></span>
                   <span className="text-slate-400">Files: <span className="text-slate-200">{driveCurrentFiles.length}</span></span>
-                  {driveDiagnostics?.message && driveConnectionStatus !== 'connected' && <span className="basis-full text-xs text-slate-400">{driveDiagnostics.message}</span>}
+                  {driveDiagnostics?.message && driveConnectionStatus !== 'connected' && (
+                    <span className="basis-full text-xs text-slate-400">
+                      {['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED', 'DRIVE_AUTH_REVOKED'].includes(driveDiagnostics.code)
+                        ? 'The shared Notes Library is currently unavailable.'
+                        : driveDiagnostics.message}
+                    </span>
+                  )}
                 </div>
                 {driveDiagnostics && driveDiagnostics.tokenStorage?.configured === false && (
                   <p className="mt-3 border-t border-slate-700 pt-3 text-xs text-amber-200">Drive cannot connect until the backend has Supabase token storage and <code>GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY</code> configured for the existing Notes Library root.</p>

@@ -209,12 +209,12 @@ function getDriveErrorMessage(code, fallback = 'Google Drive notes could not be 
     DRIVE_FILE_NOT_FOUND: 'The requested Google Drive file was not found in the Notes Library.',
     DRIVE_API_NOT_ENABLED: 'Google Drive API is not enabled for the configured Google Cloud project.',
     DRIVE_RATE_LIMITED: 'Google Drive is receiving too many requests. Wait briefly and try again.',
-    DRIVE_AUTH_REVOKED: 'Google Drive authorization expired or was revoked. Reconnect the Google account.',
-    AUTH_REQUIRED: 'Google Drive is not connected. Connect the Google account to continue.',
+    DRIVE_AUTH_REVOKED: 'The shared Notes Library is currently unavailable.',
+    AUTH_REQUIRED: 'The shared Notes Library is currently unavailable.',
     GOOGLE_REDIRECT_URI_MISMATCH: 'Google OAuth callback configuration does not match Google Cloud.',
     GOOGLE_INVALID_CLIENT: 'Google OAuth credentials are invalid on the server.',
     GOOGLE_UNAUTHORIZED_CLIENT: 'The Google OAuth client is not authorized for this application.',
-    DRIVE_AUTH_FAILED: 'Google Drive authentication failed. Please reconnect your Google account.',
+    DRIVE_AUTH_FAILED: 'The shared Notes Library is currently unavailable.',
     DRIVE_TOKEN_STORAGE_FAILED: 'The saved Google Drive authorization could not be accessed.',
     DRIVE_API_FAILED: 'Google Drive is temporarily unavailable.'
   };
@@ -293,7 +293,9 @@ export async function getDriveStatus() {
     throw new AIServiceError(import.meta.env.DEV ? `Network error calling /api/drive/status: ${error.message}` : 'Google Drive is temporarily unavailable.', { provider: 'Google Drive', code: 'DRIVE_API_FAILED' });
   }
   if (!response.ok || !data.available || !data.rootFolderId) {
-    throw new AIServiceError(data.message || getDriveErrorMessage(data.code, 'Google Drive is unavailable.'), {
+    const authUnavailable = ['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED', 'DRIVE_AUTH_REVOKED'].includes(data.code);
+    const message = authUnavailable ? getDriveErrorMessage(data.code) : data.message || getDriveErrorMessage(data.code, 'Google Drive is unavailable.');
+    throw new AIServiceError(message, {
       provider: 'Google Drive',
       code: data.code || 'DRIVE_API_FAILED',
       status: response.status,
