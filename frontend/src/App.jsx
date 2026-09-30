@@ -67,13 +67,6 @@ const UPCOMING_EXAMS = [
 const isDriveBrowserPreviewable = (mimeType) => mimeType === 'application/pdf' || mimeType === 'text/plain' || mimeType.startsWith('image/');
 const fileMimeLabel = (mimeType) => mimeType.startsWith('application/vnd.google-apps.') ? 'Google file · PDF preview' : mimeType;
 
-function getDriveRootFolderStatus(diagnostics) {
-  if (diagnostics?.rootFolderAccessible) return diagnostics.rootFolderName || 'Connected';
-  if (!diagnostics?.rootFolderConfigured) return 'Not configured';
-  if (!diagnostics?.authenticated) return diagnostics?.code === 'AUTH_REQUIRED' ? 'Authorization required' : 'Not checked';
-  return 'Unavailable';
-}
-
 function getDriveQueryState() {
   if (typeof window === 'undefined') return null;
 
@@ -321,7 +314,6 @@ export default function App() {
   const [driveNotesError, setDriveNotesError] = useState(() => initialDriveQueryState?.notesError ?? '');
   const [isGoogleDriveConnected, setIsGoogleDriveConnected] = useState(() => initialDriveQueryState?.connected ?? false);
   const [driveConnectionStatus, setDriveConnectionStatus] = useState(() => initialDriveQueryState?.connectionStatus ?? 'checking');
-  const [driveDiagnostics, setDriveDiagnostics] = useState(() => initialDriveQueryState?.diagnostics ?? null);
   const [drivePreviewFile, setDrivePreviewFile] = useState(null);
   const [isDrivePreviewFullscreen, setIsDrivePreviewFullscreen] = useState(false);
   const driveRequestSequenceRef = useRef(0);
@@ -369,7 +361,6 @@ export default function App() {
         const status = await checkDriveConnection();
         setIsGoogleDriveConnected(Boolean(status.connected));
         setDriveConnectionStatus(status.available ? 'connected' : status.connected ? 'error' : status.code && !['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED'].includes(status.code) ? 'error' : 'not-connected');
-        setDriveDiagnostics(status);
       } catch {
         setIsGoogleDriveConnected(false);
         setDriveConnectionStatus('error');
@@ -896,14 +887,6 @@ export default function App() {
       setDriveCurrentTopic(result.topicFolder.name);
       setIsGoogleDriveConnected(true);
       setDriveConnectionStatus('connected');
-      setDriveDiagnostics((previous) => ({
-        ...previous,
-        ...result,
-        rootFolderAccessible: true,
-        rootFolderConfigured: true,
-        rootFolderId: result.rootFolder.id,
-        rootFolderName: result.rootFolder.name
-      }));
     } catch (error) {
       if (requestSequence !== driveRequestSequenceRef.current) return;
       setDriveNotesError(error.message || 'Google Drive notes could not be loaded.');
@@ -916,7 +899,6 @@ export default function App() {
     setDriveNotesError('');
     try {
       const status = await checkDriveConnection();
-      setDriveDiagnostics(status);
       setIsGoogleDriveConnected(Boolean(status.connected));
       setDriveConnectionStatus(status.available ? 'connected' : status.connected ? 'error' : status.code && !['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED'].includes(status.code) ? 'error' : 'not-connected');
       if (!status.available || !status.rootFolderId) {
@@ -2742,41 +2724,6 @@ export default function App() {
                 </div>
               </div>
 
-              <section aria-label="Google Drive connection status" className="rounded-lg border border-slate-700 bg-slate-800/70 p-4">
-                <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
-                  <div className="flex items-center gap-2">
-                    <span className={`h-2 w-2 rounded-full ${driveConnectionStatus === 'connected' ? 'bg-emerald-400' : driveConnectionStatus === 'checking' ? 'bg-amber-300' : 'bg-rose-400'}`} />
-                    <span className="font-semibold text-slate-100">Google Drive</span>
-                    <span className={driveConnectionStatus === 'connected' ? 'text-emerald-300' : driveConnectionStatus === 'checking' ? 'text-amber-200' : 'text-rose-300'}>
-                      {driveConnectionStatus === 'connected' ? 'Connected' : driveConnectionStatus === 'checking' ? 'Connecting...' : driveConnectionStatus === 'not-connected' ? 'Not Connected' : 'Error'}
-                    </span>
-                  </div>
-                  <span className="text-slate-400">Root Folder: <span className={driveDiagnostics?.rootFolderAccessible ? 'text-emerald-300' : 'text-slate-300'}>{getDriveRootFolderStatus(driveDiagnostics)}</span></span>
-                  <span className="text-slate-400">Files: <span className="text-slate-200">{driveCurrentFiles.length}</span></span>
-                  {driveDiagnostics?.message && driveConnectionStatus !== 'connected' && (
-                    <span className="basis-full text-xs text-slate-400">
-                      {['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED', 'DRIVE_AUTH_REVOKED'].includes(driveDiagnostics.code)
-                        ? 'The shared Notes Library is currently unavailable.'
-                        : driveDiagnostics.message}
-                    </span>
-                  )}
-                </div>
-                {driveDiagnostics && driveDiagnostics.tokenStorage?.configured === false && (
-                  <p className="mt-3 border-t border-slate-700 pt-3 text-xs text-amber-200">Drive cannot connect until the backend has Supabase token storage and <code>GOOGLE_DRIVE_TOKEN_ENCRYPTION_KEY</code> configured for the existing Notes Library root.</p>
-                )}
-                <details className="mt-3 border-t border-slate-700 pt-3 text-xs text-slate-400">
-                  <summary className="cursor-pointer font-semibold text-slate-300">Technical details</summary>
-                  <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-all rounded bg-slate-950 p-3 text-[11px]">{JSON.stringify({
-                    message: driveDiagnostics?.message || null,
-                    code: driveDiagnostics?.code || null,
-                    configured: driveDiagnostics?.configured ?? null,
-                    checks: driveDiagnostics?.checks || null,
-                    tokenStorage: driveDiagnostics?.tokenStorage || null,
-                    diagnostics: driveDiagnostics?.diagnostics || null
-                  }, null, 2)}</pre>
-                </details>
-              </section>
-
               <nav aria-label="Google Drive breadcrumbs" className="flex flex-wrap items-center gap-1 text-sm">
                 {driveBreadcrumbs.map((crumb, index) => (
                   <div key={crumb.id} className="flex items-center gap-1">
@@ -2794,12 +2741,7 @@ export default function App() {
 
               {isDriveNotesLoading && <p role="status" className="text-sm text-slate-300">Loading notes...</p>}
               {driveNotesError && (
-                <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 p-3">
-                  <p className="text-xs text-red-200">{driveNotesError}</p>
-                  <button onClick={handleRefreshDrive} disabled={isDriveNotesLoading} className="rounded-md border border-red-300/30 px-3 py-1.5 text-xs font-semibold text-red-100 hover:bg-red-500/10 disabled:opacity-50">
-                    Retry
-                  </button>
-                </div>
+                <p role="status" className="text-sm text-slate-400">{driveNotesError}</p>
               )}
 
               {!isDriveNotesLoading && !driveNotesError && driveCurrentFolders.length > 0 && (
@@ -2854,7 +2796,7 @@ export default function App() {
               )}
 
               {!isDriveNotesLoading && !driveNotesError && driveBreadcrumbs.length === 1 && !driveCurrentFolders.length && !driveCurrentFiles.length && (
-                <p className="rounded-lg border border-dashed border-slate-600 bg-slate-800 p-8 text-center text-sm text-slate-300">No subject folders were found in the configured Google Drive root.</p>
+                <p className="py-4 text-sm text-slate-400">No folders or files in this folder.</p>
               )}
 
               {drivePreviewFile && (
