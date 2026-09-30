@@ -1521,20 +1521,6 @@ export default function App() {
             <p className="text-[11px] text-slate-400 leading-tight">
               Every test is generated dynamically by Gemini AI for the selected exam, subject, topic, and level.
             </p>
-            <div className="pt-2 border-t border-slate-700/60">
-              <div className="flex items-center justify-between gap-2 text-[11px] text-slate-300">
-                <span>Drive</span>
-                <span className={`inline-flex rounded-full px-2 py-0.5 ${driveConnectionStatus === 'connected' ? 'bg-emerald-500/15 text-emerald-300' : driveConnectionStatus === 'error' ? 'bg-rose-500/15 text-rose-300' : 'bg-slate-700 text-slate-400'}`}>
-                  {driveConnectionStatus === 'connected' ? 'Connected' : driveConnectionStatus === 'error' ? 'Error' : 'Not connected'}
-                </span>
-              </div>
-              <button
-                onClick={() => { void handleOpenDriveLibrary(); }}
-                className="mt-2 w-full rounded-lg border border-teal-500/40 bg-slate-800 px-2.5 py-1.5 text-[11px] font-semibold text-teal-200 hover:bg-slate-700"
-              >
-                Open Notes Library
-              </button>
-            </div>
           </div>
         </nav>
 
