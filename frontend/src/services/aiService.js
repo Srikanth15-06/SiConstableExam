@@ -393,7 +393,7 @@ export async function uploadDriveFile(folderId, subjectFolderId, file) {
     mimeType: file.type || mimeByExtension[extension] || 'application/octet-stream'
   });
   try {
-    const response = await fetch(apiUrl(`/api/drive/upload?${query}`), {
+    const response = await fetch(apiUrl(`/api/drive/candidate/folders/${encodeURIComponent(folderId)}/files?${query}`), {
       method: 'POST',
       credentials: 'include',
       headers: { 'Content-Type': 'application/octet-stream' },

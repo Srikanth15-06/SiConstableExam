@@ -7,7 +7,7 @@ import {
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell
 } from 'recharts';
-import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, getDriveAuthUrl, loginDriveAdmin, logoutDriveAdmin, checkDriveConnection, getDriveFileContentUrl, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, createTestAttempt, submitTestAttempt, saveTestAnswers } from './services/aiService.js';
+import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, getDriveAuthUrl, loginDriveAdmin, logoutDriveAdmin, checkDriveConnection, uploadDriveFile, getDriveFileContentUrl, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, createTestAttempt, submitTestAttempt, saveTestAnswers } from './services/aiService.js';
 import { normalizeAnswer } from './test-results.js';
 import { LEGACY_MEMBERS_STORAGE_KEY, readLegacyMembers, removeImportedLegacyMember } from './legacy-import.js';
 import { SUBJECT_TOPICS } from './syllabus.js';
@@ -321,6 +321,8 @@ export default function App() {
   const [driveAdminError, setDriveAdminError] = useState('');
   const [isDriveAdminLoggingIn, setIsDriveAdminLoggingIn] = useState(false);
   const [isDriveAuthStarting, setIsDriveAuthStarting] = useState(false);
+  const [isDriveUploading, setIsDriveUploading] = useState(false);
+  const [driveUploadMessage, setDriveUploadMessage] = useState('');
   const [drivePreviewFile, setDrivePreviewFile] = useState(null);
   const [isDrivePreviewFullscreen, setIsDrivePreviewFullscreen] = useState(false);
   const driveRequestSequenceRef = useRef(0);
@@ -985,7 +987,31 @@ export default function App() {
     }
   };
 
+  const handleCandidateDriveUpload = async (event) => {
+    const file = event.currentTarget.files?.[0];
+    event.currentTarget.value = '';
+    if (!file) return;
+    if (driveBreadcrumbs.length !== 3 || !driveBreadcrumbs[1]?.id || driveCurrentFolderId !== driveBreadcrumbs[2]?.id) {
+      setDriveNotesError('Choose an existing topic folder before sharing a note.');
+      return;
+    }
+
+    setDriveNotesError('');
+    setDriveUploadMessage('');
+    setIsDriveUploading(true);
+    try {
+      const uploadedFile = await uploadDriveFile(driveCurrentFolderId, driveBreadcrumbs[1].id, file);
+      setDriveUploadMessage(`${uploadedFile.name} is now shared in ${driveBreadcrumbs[2].name}.`);
+      await loadDriveFolder(driveCurrentFolderId, driveBreadcrumbs);
+    } catch (error) {
+      setDriveNotesError(error.message || 'Your note could not be shared.');
+    } finally {
+      setIsDriveUploading(false);
+    }
+  };
+
   const handleOpenDriveFolder = (folder) => {
+    setDriveUploadMessage('');
     const nextBreadcrumbs = [...driveBreadcrumbs, { id: folder.id, name: folder.name }];
     if (driveBreadcrumbs.length === 1) {
       setDriveCurrentSubject(folder.name);
@@ -997,6 +1023,7 @@ export default function App() {
   };
 
   const handleDriveBreadcrumbClick = (index) => {
+    setDriveUploadMessage('');
     const nextBreadcrumbs = driveBreadcrumbs.slice(0, index + 1);
     setDriveCurrentSubject(nextBreadcrumbs[1]?.name || '');
     setDriveCurrentTopic(nextBreadcrumbs[2]?.name || '');
@@ -2858,6 +2885,25 @@ export default function App() {
                   </div>
                 ))}
               </nav>
+
+              {driveBreadcrumbs.length === 3 && driveCurrentFolderId === driveBreadcrumbs[2]?.id && (
+                <section aria-label="Share a note with candidates" className="border-b border-slate-800 pb-4">
+                  <label className="block text-sm font-semibold text-slate-200" htmlFor="candidate-drive-upload">
+                    Share a note with candidates
+                    <input
+                      id="candidate-drive-upload"
+                      type="file"
+                      accept=".pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.txt,.png,.jpg,.jpeg,.webp"
+                      disabled={isDriveUploading || isDriveNotesLoading}
+                      onChange={handleCandidateDriveUpload}
+                      className="mt-2 block w-full text-sm text-slate-300 file:mr-3 file:rounded-md file:border-0 file:bg-teal-700 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-white hover:file:bg-teal-600 disabled:opacity-50"
+                    />
+                  </label>
+                  <p className="mt-2 text-xs text-slate-400">Published immediately in this topic for other candidates. PDF, Office documents, TXT, PNG, JPG, or WebP; up to 20 MB.</p>
+                  {isDriveUploading && <p role="status" className="mt-2 text-xs text-slate-300">Uploading note...</p>}
+                  {driveUploadMessage && <p role="status" className="mt-2 text-xs text-teal-200">{driveUploadMessage}</p>}
+                </section>
+              )}
 
               {isDriveNotesLoading && <p role="status" className="text-sm text-slate-300">Loading notes...</p>}
               {driveNotesError && (

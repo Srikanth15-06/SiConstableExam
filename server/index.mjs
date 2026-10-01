@@ -14,6 +14,7 @@ import { SupabaseSessionStore } from './supabase-session-store.mjs';
 import { isSupabaseConfigured } from './supabase-client.mjs';
 import { validateProductionEnvironment } from './production-config.mjs';
 import { getHealthStatus } from './health-status.mjs';
+import { createCandidateDriveUploadRouter } from './drive-upload-routes.mjs';
 
 dotenv.config();
 
@@ -129,6 +130,12 @@ const driveApiRateLimiter = createIpRateLimiter({
     windowMs: 60_000,
     code: 'DRIVE_RATE_LIMITED',
     message: 'Too many Google Drive requests. Wait briefly before trying again.'
+});
+const candidateDriveUploadRateLimiter = createIpRateLimiter({
+    limit: 5,
+    windowMs: 60 * 60_000,
+    code: 'DRIVE_UPLOAD_RATE_LIMITED',
+    message: 'Too many shared notes were uploaded. Try again later.'
 });
 
 app.use((_req, res, next) => {
@@ -432,6 +439,13 @@ app.get('/api/drive/files', requireCandidateSession, async (req, res) => {
         sendGoogleDriveFailure(res, error);
     }
 });
+
+app.use('/api/drive', createCandidateDriveUploadRouter({
+    allowedOrigins,
+    requireCandidateSession,
+    rateLimiter: candidateDriveUploadRateLimiter,
+    sendFailure: sendGoogleDriveFailure
+}));
 
 app.post('/api/drive/upload', requireDriveAdmin, express.raw({ type: 'application/octet-stream', limit: '20mb' }), async (req, res) => {
     try {
