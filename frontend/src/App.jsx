@@ -7,7 +7,7 @@ import {
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell
 } from 'recharts';
-import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, checkDriveConnection, getDriveFileContentUrl, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, createTestAttempt, submitTestAttempt, saveTestAnswers } from './services/aiService.js';
+import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, getDriveAuthUrl, loginDriveAdmin, logoutDriveAdmin, checkDriveConnection, getDriveFileContentUrl, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, createTestAttempt, submitTestAttempt, saveTestAnswers } from './services/aiService.js';
 import { normalizeAnswer } from './test-results.js';
 import { LEGACY_MEMBERS_STORAGE_KEY, readLegacyMembers, removeImportedLegacyMember } from './legacy-import.js';
 import { SUBJECT_TOPICS } from './syllabus.js';
@@ -314,6 +314,13 @@ export default function App() {
   const [driveNotesError, setDriveNotesError] = useState(() => initialDriveQueryState?.notesError ?? '');
   const [isGoogleDriveConnected, setIsGoogleDriveConnected] = useState(() => initialDriveQueryState?.connected ?? false);
   const [driveConnectionStatus, setDriveConnectionStatus] = useState(() => initialDriveQueryState?.connectionStatus ?? 'checking');
+  const [driveAdminAuthConfigured, setDriveAdminAuthConfigured] = useState(false);
+  const [isDriveAdminAuthorized, setIsDriveAdminAuthorized] = useState(false);
+  const [isDriveAdminStatusLoaded, setIsDriveAdminStatusLoaded] = useState(false);
+  const [driveAdminKey, setDriveAdminKey] = useState('');
+  const [driveAdminError, setDriveAdminError] = useState('');
+  const [isDriveAdminLoggingIn, setIsDriveAdminLoggingIn] = useState(false);
+  const [isDriveAuthStarting, setIsDriveAuthStarting] = useState(false);
   const [drivePreviewFile, setDrivePreviewFile] = useState(null);
   const [isDrivePreviewFullscreen, setIsDrivePreviewFullscreen] = useState(false);
   const driveRequestSequenceRef = useRef(0);
@@ -361,9 +368,15 @@ export default function App() {
         const status = await checkDriveConnection();
         setIsGoogleDriveConnected(Boolean(status.connected));
         setDriveConnectionStatus(status.available ? 'connected' : status.connected ? 'error' : status.code && !['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED'].includes(status.code) ? 'error' : 'not-connected');
+        setDriveAdminAuthConfigured(Boolean(status.adminAuthConfigured));
+        setIsDriveAdminAuthorized(Boolean(status.adminAuthorized));
       } catch {
         setIsGoogleDriveConnected(false);
         setDriveConnectionStatus('error');
+        setDriveAdminAuthConfigured(false);
+        setIsDriveAdminAuthorized(false);
+      } finally {
+        setIsDriveAdminStatusLoaded(true);
       }
     };
     void syncDriveConnectionState();
@@ -901,6 +914,8 @@ export default function App() {
       const status = await checkDriveConnection();
       setIsGoogleDriveConnected(Boolean(status.connected));
       setDriveConnectionStatus(status.available ? 'connected' : status.connected ? 'error' : status.code && !['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED'].includes(status.code) ? 'error' : 'not-connected');
+      setDriveAdminAuthConfigured(Boolean(status.adminAuthConfigured));
+      setIsDriveAdminAuthorized(Boolean(status.adminAuthorized));
       if (!status.available || !status.rootFolderId) {
         const sharedLibraryMessage = ['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED', 'DRIVE_AUTH_REVOKED'].includes(status.code)
           ? 'The shared Notes Library is currently unavailable.'
@@ -915,6 +930,58 @@ export default function App() {
     } catch (error) {
       setDriveConnectionStatus('error');
       setDriveNotesError(error.message || 'Google Drive could not be refreshed.');
+    }
+  };
+
+  const handleDriveAdminLogin = async (event) => {
+    event.preventDefault();
+    if (!driveAdminKey || isDriveAdminLoggingIn) return;
+
+    setIsDriveAdminLoggingIn(true);
+    setDriveAdminError('');
+    try {
+      await loginDriveAdmin(driveAdminKey);
+      setDriveAdminKey('');
+      const status = await checkDriveConnection();
+      setDriveAdminAuthConfigured(Boolean(status.adminAuthConfigured));
+      setIsDriveAdminAuthorized(Boolean(status.adminAuthorized));
+      setIsGoogleDriveConnected(Boolean(status.connected));
+      setDriveConnectionStatus(status.available ? 'connected' : status.connected ? 'error' : status.code && !['AUTH_REQUIRED', 'DRIVE_AUTH_FAILED'].includes(status.code) ? 'error' : 'not-connected');
+      if (!status.adminAuthorized) throw new Error('Administrator access could not be verified.');
+      setDriveNotesError('');
+      if (status.available && status.rootFolderId) {
+        setDriveRootFolderId(status.rootFolderId);
+        await loadDriveFolder(status.rootFolderId, [{ id: status.rootFolderId, name: 'Subjects' }]);
+      }
+    } catch (error) {
+      setDriveAdminError(error.message || 'Administrator access could not be verified.');
+    } finally {
+      setDriveAdminKey('');
+      setIsDriveAdminLoggingIn(false);
+    }
+  };
+
+  const handleDriveAdminLogout = async () => {
+    setDriveAdminError('');
+    try {
+      await logoutDriveAdmin();
+      setIsDriveAdminAuthorized(false);
+    } catch (error) {
+      setDriveAdminError(error.message || 'Administrator session could not be closed.');
+    }
+  };
+
+  const handleConnectGoogleDrive = async () => {
+    if (!isDriveAdminAuthorized || isDriveAuthStarting) return;
+
+    setIsDriveAuthStarting(true);
+    setDriveAdminError('');
+    try {
+      const authUrl = await getDriveAuthUrl();
+      window.location.assign(authUrl);
+    } catch (error) {
+      setDriveAdminError(error.message || 'Google Drive authorization could not be started.');
+      setIsDriveAuthStarting(false);
     }
   };
 
@@ -2709,6 +2776,72 @@ export default function App() {
                   </button>
                 </div>
               </div>
+
+              {isDriveAdminStatusLoaded && (
+                <section aria-label="Google Drive administration" className="border-b border-slate-800 pb-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-100">Drive administration</p>
+                      <p className="mt-1 text-xs text-slate-400">
+                        {!driveAdminAuthConfigured
+                          ? 'Administrator access is not configured.'
+                          : isDriveAdminAuthorized
+                            ? isGoogleDriveConnected && driveConnectionStatus === 'connected'
+                              ? 'Google Drive is connected.'
+                              : driveConnectionStatus === 'checking'
+                                ? 'Checking Google Drive connection.'
+                                : driveConnectionStatus === 'error'
+                                  ? 'Google Drive connection needs attention.'
+                                  : 'Administrator access is active.'
+                            : 'Administrator authorization is required to connect Google Drive.'}
+                      </p>
+                    </div>
+                    {!driveAdminAuthConfigured ? null : isDriveAdminAuthorized ? (
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          onClick={handleConnectGoogleDrive}
+                          disabled={isDriveAuthStarting}
+                          className="rounded-lg bg-teal-600 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-500 disabled:opacity-50"
+                        >
+                          {isDriveAuthStarting ? 'Opening Google...' : isGoogleDriveConnected ? 'Reconnect Google Drive' : 'Connect Google Drive'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDriveAdminLogout}
+                          aria-label="Lock Drive admin controls"
+                          title="Lock Drive admin controls"
+                          className="rounded-lg border border-slate-700 p-2 text-slate-300 hover:bg-slate-800"
+                        >
+                          <Lock className="h-4 w-4" />
+                        </button>
+                      </div>
+                    ) : (
+                      <form onSubmit={handleDriveAdminLogin} className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
+                        <label className="min-w-0 flex-1 text-xs font-semibold text-slate-300" htmlFor="drive-admin-key">
+                          Notes Library administrator key
+                          <input
+                            id="drive-admin-key"
+                            type="password"
+                            autoComplete="current-password"
+                            value={driveAdminKey}
+                            onChange={(event) => setDriveAdminKey(event.target.value)}
+                            className="mt-1 w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-teal-500"
+                          />
+                        </label>
+                        <button
+                          type="submit"
+                          disabled={!driveAdminKey || isDriveAdminLoggingIn}
+                          className="rounded-md bg-slate-700 px-3 py-2 text-xs font-semibold text-white hover:bg-slate-600 disabled:opacity-50"
+                        >
+                          {isDriveAdminLoggingIn ? 'Verifying...' : 'Unlock management'}
+                        </button>
+                      </form>
+                    )}
+                  </div>
+                  {driveAdminError && <p role="alert" className="mt-2 text-xs text-rose-300">{driveAdminError}</p>}
+                </section>
+              )}
 
               <nav aria-label="Google Drive breadcrumbs" className="flex flex-wrap items-center gap-1 text-sm">
                 {driveBreadcrumbs.map((crumb, index) => (
