@@ -2804,7 +2804,7 @@ export default function App() {
                 </div>
               </div>
 
-              {isDriveAdminStatusLoaded && (
+              {isDriveAdminStatusLoaded && !(isGoogleDriveConnected && driveConnectionStatus === 'connected') && (
                 <section aria-label="Google Drive administration" className="border-b border-slate-800 pb-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div>
