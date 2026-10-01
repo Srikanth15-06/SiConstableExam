@@ -298,10 +298,10 @@ export function createAuthenticationRouter({ dataStore, sessions, allowedOrigins
         try {
             const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
             await dataStore.createAccount({ name, email, passwordHash });
-            res.status(202).json({ success: true, code: 'SIGNUP_ACCEPTED', message: 'If this address is available, the account is ready. Sign in to continue; if it already has an account, sign in with that account.' });
+            res.status(202).json({ success: true, code: 'SIGNUP_ACCEPTED', message: 'Signup request complete. Please sign in to continue. If you already have an account, use your existing password.' });
         } catch (error) {
             if (error.code === 'ACCOUNT_EXISTS') {
-                res.status(202).json({ success: true, code: 'SIGNUP_ACCEPTED', message: 'If this address is available, the account is ready. Sign in to continue; if it already has an account, sign in with that account.' });
+                res.status(202).json({ success: true, code: 'SIGNUP_ACCEPTED', message: 'Signup request complete. Please sign in to continue. If you already have an account, use your existing password.' });
                 return;
             }
             const requestId = randomUUID();

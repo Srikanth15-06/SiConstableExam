@@ -1,3 +1,5 @@
+import { SUBJECT_TOPICS } from './syllabus.js';
+
 export const DEFAULT_TOPIC_WEIGHTAGE = {
     SI: {
         Arithmetic: {
@@ -284,6 +286,129 @@ export const DEFAULT_TOPIC_WEIGHTAGE = {
 };
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+const VALID_EXAMS = new Set(['SI', 'CONSTABLE']);
+const NEXT_LEVEL = { Beginner: 'Intermediate', Intermediate: 'Expert', Expert: 'Pro', Pro: 'Pro' };
+
+export function getProgressKey(exam, subject, topic) {
+    if (!VALID_EXAMS.has(exam) || !subject || !topic) throw new TypeError('A valid exam, subject, and topic are required.');
+    return `${exam}|${subject}|${topic}`;
+}
+
+export function getTopicProgress(userProgress, exam, subject, topic) {
+    const progress = userProgress?.[getProgressKey(exam, subject, topic)];
+    return progress?.exam === exam && progress.subject === subject && progress.topic === topic ? progress : null;
+}
+
+export function getLegacyTopicProgress(userProgress, accountExam, exam, subject, topic, subjectTopics = SUBJECT_TOPICS) {
+    const legacy = userProgress?.[topic];
+    if (!legacy || typeof legacy !== 'object' || Array.isArray(legacy)) return null;
+    const legacyExam = VALID_EXAMS.has(legacy.exam) ? legacy.exam : VALID_EXAMS.has(accountExam) ? accountExam : 'SI';
+    if (legacyExam !== exam || (legacy.topic && legacy.topic !== topic)) return null;
+    const legacySubject = legacy.subject || inferProgressSubject(topic, subjectTopics);
+    if (legacySubject !== subject) return null;
+    return {
+        ...legacy,
+        exam: legacyExam,
+        subject: legacySubject,
+        topic,
+        ...(!VALID_EXAMS.has(legacy.exam) ? { roleInferred: true } : {})
+    };
+}
+
+export function getExamHistory(testHistory, exam) {
+    if (!VALID_EXAMS.has(exam) || !Array.isArray(testHistory)) return [];
+    return testHistory.filter((attempt) => attempt?.exam === exam);
+}
+
+function inferProgressSubject(topic, subjectTopics) {
+    const matches = Object.entries(subjectTopics)
+        .filter(([, topics]) => topics.includes(topic))
+        .map(([subject]) => subject);
+    return matches.length === 1 ? matches[0] : 'Unspecified';
+}
+
+export function normalizeUserProgress(userProgress, accountExam = 'SI', testHistory = [], subjectTopics = SUBJECT_TOPICS) {
+    const fallbackExam = VALID_EXAMS.has(accountExam) ? accountExam : 'SI';
+    const normalized = {};
+    const historyByKey = new Map();
+
+    for (const attempt of Array.isArray(testHistory) ? testHistory : []) {
+        if (!VALID_EXAMS.has(attempt?.exam) || !subjectTopics[attempt.subject]?.includes(attempt.topic)) continue;
+        const key = getProgressKey(attempt.exam, attempt.subject, attempt.topic);
+        const attempts = historyByKey.get(key) || [];
+        attempts.push(attempt);
+        historyByKey.set(key, attempts);
+    }
+
+    for (const [key, attempts] of historyByKey) {
+        const orderedAttempts = attempts
+            .map((attempt, index) => ({ attempt, index }))
+            .sort((left, right) => {
+                const leftDate = String(left.attempt.submittedAt || left.attempt.date || '');
+                const rightDate = String(right.attempt.submittedAt || right.attempt.date || '');
+                return leftDate.localeCompare(rightDate) || left.index - right.index;
+            });
+        const [, subject, topic] = key.split('|');
+        const exam = orderedAttempts[0].attempt.exam;
+        let level = 'Beginner';
+        let bestScore = 0;
+        let correctAnswers = 0;
+        let totalQuestions = 0;
+
+        for (const { attempt } of orderedAttempts) {
+            const correct = Number(attempt.correct ?? attempt.score) || 0;
+            const total = Number(attempt.total) || attempt.questions?.length || 10;
+            bestScore = Math.max(bestScore, correct);
+            correctAnswers += correct;
+            totalQuestions += total;
+            if (attempt.status === 'LEVEL PASSED') level = NEXT_LEVEL[attempt.difficulty] || level;
+        }
+
+        normalized[key] = {
+            exam,
+            subject,
+            topic,
+            level,
+            bestScore,
+            attempts: orderedAttempts.length,
+            correctAnswers,
+            totalQuestions,
+            accuracy: totalQuestions ? Math.round((correctAnswers / totalQuestions) * 100) : 0
+        };
+    }
+
+    const entries = Object.entries(userProgress && typeof userProgress === 'object' && !Array.isArray(userProgress) ? userProgress : {});
+    entries.sort(([leftKey, left], [rightKey, right]) => {
+        const isScoped = (key, value) => {
+            const exam = VALID_EXAMS.has(value?.exam) ? value.exam : key.split('|')[0];
+            const subject = value?.subject || key.split('|')[1];
+            const topic = value?.topic || key.split('|')[2] || key;
+            return VALID_EXAMS.has(exam) && key === getProgressKey(exam, subject, topic);
+        };
+        return Number(isScoped(rightKey, right)) - Number(isScoped(leftKey, left));
+    });
+
+    for (const [storedKey, value] of entries) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) continue;
+        const keyParts = storedKey.split('|');
+        const keyHasExam = keyParts.length === 3 && VALID_EXAMS.has(keyParts[0]);
+        const topic = value.topic || (keyHasExam ? keyParts[2] : storedKey);
+        const exam = VALID_EXAMS.has(value.exam) ? value.exam : keyHasExam ? keyParts[0] : fallbackExam;
+        const keyedSubject = keyHasExam ? keyParts[1] : '';
+        const subject = value.subject || (subjectTopics[keyedSubject]?.includes(topic) ? keyedSubject : inferProgressSubject(topic, subjectTopics));
+        const key = getProgressKey(exam, subject, topic);
+        if (Object.hasOwn(normalized, key)) continue;
+        normalized[key] = {
+            ...value,
+            exam,
+            subject,
+            topic,
+            ...(!VALID_EXAMS.has(value.exam) && !keyHasExam ? { roleInferred: true } : {})
+        };
+    }
+
+    return normalized;
+}
 
 export function getPriorityColorClass(priority = 'LOW') {
     const map = {
@@ -316,17 +441,17 @@ export function getProgressColorClass(value = 0) {
     return 'text-red-300';
 }
 
-export function calculateSubjectCompletion(subject, topics = [], userProgress = {}, testHistory = []) {
+export function calculateSubjectCompletion(subject, topics = [], userProgress = {}, testHistory = [], examType = 'SI') {
     const normalizedTopics = Array.isArray(topics) ? topics : [];
     const totalTopics = normalizedTopics.length || 1;
     const practicedTopics = normalizedTopics.filter((topic) => {
-        const progress = userProgress[topic] || {};
-        const topicAttemptCount = testHistory.filter((attempt) => attempt.subject === subject && attempt.topic === topic).length;
+        const progress = getTopicProgress(userProgress, examType, subject, topic) || {};
+        const topicAttemptCount = testHistory.filter((attempt) => attempt.exam === examType && attempt.subject === subject && attempt.topic === topic).length;
         return Number(progress.attempts || 0) > 0 || topicAttemptCount > 0;
     }).length;
     const coverage = (practicedTopics / totalTopics) * 100;
     const averageBestScore = normalizedTopics.length
-        ? normalizedTopics.reduce((sum, topic) => sum + Number(userProgress[topic]?.bestScore || 0), 0) / normalizedTopics.length
+        ? normalizedTopics.reduce((sum, topic) => sum + Number(getTopicProgress(userProgress, examType, subject, topic)?.bestScore || 0), 0) / normalizedTopics.length
         : 0;
     const mastery = Math.min(100, (averageBestScore / 10) * 100);
     return clamp(Math.round((coverage * 0.75) + (mastery * 0.25)), 0, 100);
@@ -377,10 +502,11 @@ export function daysRemainingForExam(examType, today = new Date()) {
 
 export function buildPlannerSnapshot(member, examType, subjectTopics = {}) {
     const normalizedExam = examType === 'CONSTABLE' ? 'CONSTABLE' : 'SI';
-    const history = Array.isArray(member?.testHistory) ? member.testHistory.filter((attempt) => String(attempt.exam || 'SI') === normalizedExam) : [];
-    const hasProgressData = Object.values(member?.userProgress || {}).some((progress) => {
+    const history = Array.isArray(member?.testHistory) ? member.testHistory.filter((attempt) => attempt.exam === normalizedExam) : [];
+    const scopedProgress = normalizeUserProgress(member?.userProgress, member?.exam || normalizedExam, member?.testHistory, subjectTopics);
+    const hasProgressData = Object.values(scopedProgress).some((progress) => {
         if (!progress || typeof progress !== 'object') return false;
-        return Number(progress.attempts || progress.total || progress.questionsAttempted || 0) > 0;
+        return progress.exam === normalizedExam && Number(progress.attempts || progress.total || progress.questionsAttempted || 0) > 0;
     });
 
     const metrics = [];
@@ -399,7 +525,7 @@ export function buildPlannerSnapshot(member, examType, subjectTopics = {}) {
             const recentAccuracy = recentAttempts.length
                 ? Math.round(recentAttempts.reduce((sum, attempt) => sum + Number(attempt.accuracy || 0), 0) / recentAttempts.length)
                 : 0;
-            const currentProgress = member?.userProgress?.[topic] || {};
+            const currentProgress = getTopicProgress(scopedProgress, normalizedExam, subject, topic) || {};
             const completion = clamp(Math.round(((Number(currentProgress.attempts || relevantAttempts.length) * 14) + (attempted * 3) + (accuracy * 0.4)) / 1.75), 0, 100);
             const weightage = resolveTopicWeightage(normalizedExam, subject, topic, {});
             const daysRemaining = daysRemainingForExam(normalizedExam);
@@ -527,5 +653,31 @@ export function buildPlannerSnapshot(member, examType, subjectTopics = {}) {
             return priorityValue[a.priority] - priorityValue[b.priority] || b.weightage - a.weightage;
         }),
         schedule: upcoming
+    };
+}
+
+export function mergePlannerSnapshot(previousPlanner, member, examType, subjectTopics = SUBJECT_TOPICS) {
+    if (!member) return previousPlanner || { examType, generatedAt: null, summary: {}, topicMetrics: [], schedule: [] };
+
+    const nextPlanner = buildPlannerSnapshot(member, examType, subjectTopics);
+    const previousSchedule = Array.isArray(previousPlanner?.schedule) ? previousPlanner.schedule : [];
+    const manualTasks = previousSchedule
+        .filter((task) => !task.autoGenerated)
+        .map((task) => task.examType ? task : { ...task, examType: previousPlanner.examType || nextPlanner.examType });
+    const otherRoleTasks = previousSchedule.filter((task) => task.autoGenerated && (task.examType || previousPlanner.examType) !== nextPlanner.examType);
+    const activeRoleTasks = nextPlanner.schedule.filter((task) => task.autoGenerated && task.examType === nextPlanner.examType);
+    const schedule = [...manualTasks, ...otherRoleTasks, ...activeRoleTasks]
+        .sort((left, right) => left.date.localeCompare(right.date) || left.startTime.localeCompare(right.startTime));
+    const activeRoleSchedule = schedule.filter((task) => (task.examType || nextPlanner.examType) === nextPlanner.examType);
+
+    return {
+        ...(previousPlanner || {}),
+        ...nextPlanner,
+        schedule,
+        summary: {
+            ...nextPlanner.summary,
+            todaysTasks: activeRoleSchedule.filter((task) => task.date === new Date().toISOString().split('T')[0]).length,
+            upcomingTasks: activeRoleSchedule.length
+        }
     };
 }

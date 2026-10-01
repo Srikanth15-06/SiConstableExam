@@ -5,6 +5,7 @@ import express from 'express';
 import { once } from 'node:events';
 import { createAuthenticationRouter, InMemorySessionStore } from './auth-service.mjs';
 import { createUserDataRouter } from './user-data-routes.mjs';
+import { getProgressKey } from '../frontend/src/planner-utils.js';
 
 function publicAccount(account) {
     const { passwordHash: _passwordHash, ...safe } = account;
@@ -38,6 +39,15 @@ function createMemoryStore() {
         async recordLogin(userId) {
             const account = [...accounts.values()].find((item) => item.userId === userId);
             account.lastLoginAt = new Date().toISOString();
+            return publicAccount(account);
+        },
+        async updateProfile(userId, { name, exam }) {
+            const account = [...accounts.values()].find((item) => item.userId === userId);
+            account.name = name;
+            const record = records.get(userId);
+            record.exam = exam;
+            record.profile.name = name;
+            record.plannerData.examType = exam;
             return publicAccount(account);
         },
         async getUserData(userId) {
@@ -114,12 +124,37 @@ async function signUp(baseUrl, name, email) {
     return { user: (await response.json()).user, cookie: response.headers.get('set-cookie').split(';')[0] };
 }
 
-async function startAttempt(baseUrl, cookie, idempotencyKey) {
+async function startAttempt(baseUrl, cookie, idempotencyKey, exam = 'SI') {
     return fetch(`${baseUrl}/api/tests`, {
         method: 'POST',
         headers: { ...authHeaders(cookie), 'Idempotency-Key': idempotencyKey },
-        body: JSON.stringify({ exam: 'SI', subject: 'Arithmetic', topic: 'Percentages', difficulty: 'Beginner' })
+        body: JSON.stringify({ exam, subject: 'Arithmetic', topic: 'Percentages', difficulty: 'Beginner' })
     });
+}
+
+async function switchExam(baseUrl, cookie, exam) {
+    return fetch(`${baseUrl}/api/me/profile`, {
+        method: 'PATCH',
+        headers: authHeaders(cookie),
+        body: JSON.stringify({ name: 'Candidate', exam })
+    });
+}
+
+async function completeAttempt(baseUrl, cookie, exam, correctCount) {
+    const created = await startAttempt(baseUrl, cookie, randomUUID(), exam);
+    const { attempt } = await created.json();
+    assert.equal(created.status, 201);
+    const answers = Array.from({ length: 10 }, (_, index) => ({
+        questionId: `q-${index + 1}`,
+        selectedAnswer: index < correctCount ? `Correct ${index + 1}` : `Wrong A ${index + 1}`
+    }));
+    const submitted = await fetch(`${baseUrl}/api/tests/${attempt.attemptId}/submit`, {
+        method: 'POST',
+        headers: authHeaders(cookie),
+        body: JSON.stringify({ answers })
+    });
+    assert.equal(submitted.status, 200);
+    return (await submitted.json()).result;
 }
 
 test('test creation creates exactly one active attempt when none exists', async (context) => {
@@ -331,9 +366,70 @@ test('test creation redacts answer keys, server scores once, and users cannot re
     const updatedA = await (await fetch(`${baseUrl}/api/me/data`, { headers: { Cookie: userA.cookie } })).json();
     const untouchedB = await (await fetch(`${baseUrl}/api/me/data`, { headers: { Cookie: userB.cookie } })).json();
     assert.equal(updatedA.data.testHistory.length, 1);
-    assert.equal(updatedA.data.userProgress.Percentages.attempts, 1);
+    assert.equal(updatedA.data.userProgress[getProgressKey('SI', 'Arithmetic', 'Percentages')].attempts, 1);
     assert.equal(untouchedB.data.testHistory.length, 0);
     assert.deepEqual(untouchedB.data.userProgress, {});
+});
+
+test('SI and Constable submissions preserve independent progress when switching roles', async (context) => {
+    const { server, baseUrl, dataStore } = await createServer();
+    context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+    const user = await signUp(baseUrl, 'Candidate', 'role-isolation@example.test');
+    const siKey = getProgressKey('SI', 'Arithmetic', 'Percentages');
+    const constableKey = getProgressKey('CONSTABLE', 'Arithmetic', 'Percentages');
+
+    await completeAttempt(baseUrl, user.cookie, 'SI', 8);
+    let progress = dataStore.records.get(user.user.userId).userProgress;
+    assert.equal(progress[siKey].bestScore, 8);
+    assert.equal(progress[siKey].attempts, 1);
+    assert.equal(progress[constableKey], undefined);
+    const savedSiProgress = structuredClone(progress[siKey]);
+
+    assert.equal((await switchExam(baseUrl, user.cookie, 'CONSTABLE')).status, 200);
+    await completeAttempt(baseUrl, user.cookie, 'CONSTABLE', 9);
+    progress = dataStore.records.get(user.user.userId).userProgress;
+    assert.deepEqual(progress[siKey], savedSiProgress);
+    assert.equal(progress[siKey].bestScore, 8);
+    assert.equal(progress[siKey].attempts, 1);
+    assert.equal(progress[constableKey].bestScore, 9);
+    assert.equal(progress[constableKey].attempts, 1);
+    assert.equal(progress[constableKey].totalQuestions, 10);
+
+    assert.equal((await switchExam(baseUrl, user.cookie, 'SI')).status, 200);
+    assert.equal((await switchExam(baseUrl, user.cookie, 'CONSTABLE')).status, 200);
+    progress = (await (await fetch(`${baseUrl}/api/me/data`, { headers: { Cookie: user.cookie } })).json()).data.userProgress;
+    assert.equal(progress[siKey].bestScore, 8);
+    assert.equal(progress[constableKey].bestScore, 9);
+});
+
+test('a legacy untagged progress record is assigned to the account exam before a role switch', async (context) => {
+    const { server, baseUrl, dataStore } = await createServer();
+    context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+    const user = await signUp(baseUrl, 'Candidate', 'legacy-role-isolation@example.test');
+    dataStore.records.get(user.user.userId).userProgress.Percentages = {
+        topic: 'Percentages', subject: 'Arithmetic', attempts: 1, bestScore: 7, accuracy: 70
+    };
+
+    const switched = await switchExam(baseUrl, user.cookie, 'CONSTABLE');
+    assert.equal(switched.status, 200);
+    const progress = dataStore.records.get(user.user.userId).userProgress;
+    assert.equal(progress[getProgressKey('SI', 'Arithmetic', 'Percentages')].bestScore, 7);
+    assert.equal(progress[getProgressKey('CONSTABLE', 'Arithmetic', 'Percentages')], undefined);
+});
+
+test('level unlock progression stays independent for SI and Constable', async (context) => {
+    const { server, baseUrl, dataStore } = await createServer();
+    context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+    const user = await signUp(baseUrl, 'Candidate', 'role-level-isolation@example.test');
+    const siKey = getProgressKey('SI', 'Arithmetic', 'Percentages');
+    const constableKey = getProgressKey('CONSTABLE', 'Arithmetic', 'Percentages');
+
+    await completeAttempt(baseUrl, user.cookie, 'SI', 8);
+    await switchExam(baseUrl, user.cookie, 'CONSTABLE');
+    await completeAttempt(baseUrl, user.cookie, 'CONSTABLE', 7);
+    const progress = dataStore.records.get(user.user.userId).userProgress;
+    assert.equal(progress[siKey].level, 'Intermediate');
+    assert.equal(progress[constableKey].level, 'Beginner');
 });
 
 test('test generation rejects non-syllabus context and protected data requires a session', async (context) => {

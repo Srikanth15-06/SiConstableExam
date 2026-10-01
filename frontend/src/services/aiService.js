@@ -90,6 +90,28 @@ export async function saveTestAnswers(attemptId, answers) {
   });
 }
 
+export async function getTopicLearningVideos(subject, topic) {
+  const query = new URLSearchParams({ subject, topic });
+  return requestCandidateApi(`/api/learning-videos?${query.toString()}`);
+}
+
+export async function getAdminLearningVideos(exam, subject, topic) {
+  const query = new URLSearchParams({ exam, subject, topic });
+  return requestCandidateApi(`/api/admin/learning-videos?${query.toString()}`);
+}
+
+export async function createAdminLearningVideo(video) {
+  return requestCandidateApi('/api/admin/learning-videos', { method: 'POST', body: video });
+}
+
+export async function updateAdminLearningVideo(id, video) {
+  return requestCandidateApi(`/api/admin/learning-videos/${encodeURIComponent(id)}`, { method: 'PATCH', body: video });
+}
+
+export async function deleteAdminLearningVideo(id) {
+  return requestCandidateApi(`/api/admin/learning-videos/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
 async function postAI(path, payload, provider) {
   let response;
   try {

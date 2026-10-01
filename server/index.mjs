@@ -15,6 +15,8 @@ import { isSupabaseConfigured } from './supabase-client.mjs';
 import { validateProductionEnvironment } from './production-config.mjs';
 import { getHealthStatus } from './health-status.mjs';
 import { createCandidateDriveUploadRouter } from './drive-upload-routes.mjs';
+import { createTopicLearningVideoRouter } from './topic-learning-video-routes.mjs';
+import { createSupabaseLearningVideoStore } from './supabase-learning-video-store.mjs';
 
 dotenv.config();
 
@@ -261,6 +263,13 @@ function requireDriveAdmin(req, res, next) {
     }
     next();
 }
+
+app.use('/api', createTopicLearningVideoRouter({
+    dataStore: candidateDataStore,
+    videoStore: createSupabaseLearningVideoStore(candidateDataStore),
+    sessions: candidateSessions,
+    requireAdmin: requireDriveAdmin
+}));
 
 app.post('/api/drive/admin/session', adminLoginRateLimiter, (req, res) => {
     const configuredKey = getDriveAdminKey();

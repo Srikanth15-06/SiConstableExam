@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { Router } from 'express';
 import { calculateTestResult } from '../frontend/src/test-results.js';
+import { getLegacyTopicProgress, getProgressKey, normalizeUserProgress } from '../frontend/src/planner-utils.js';
 import { EXAM_TYPES, SUBJECT_TOPICS } from '../frontend/src/syllabus.js';
 import { generateQuestions } from './ai-service.mjs';
 import { createAuthenticationMiddleware } from './auth-service.mjs';
@@ -167,6 +169,14 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
             return;
         }
         try {
+            const currentData = await dataStore.getUserData(req.authUserId);
+            const normalizedProgress = normalizeUserProgress(currentData.userProgress, currentData.exam, currentData.testHistory, SUBJECT_TOPICS);
+            if (!isDeepStrictEqual(currentData.userProgress || {}, normalizedProgress)) {
+                await dataStore.updateUserData(req.authUserId, (record) => {
+                    record.userProgress = normalizeUserProgress(record.userProgress, record.exam, record.testHistory, SUBJECT_TOPICS);
+                    return record;
+                });
+            }
             const user = await dataStore.updateProfile(req.authUserId, { name, exam: exam.local });
             const record = await dataStore.getUserData(req.authUserId);
             res.json({ success: true, profile: record.profile, exam: record.exam, user });
@@ -391,14 +401,21 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
                 const durationSeconds = Math.min(600, elapsedSeconds);
                 const isPassed = result.total === 10 && result.correct >= 8;
                 const nextLevel = { Beginner: 'Intermediate', Intermediate: 'Expert', Expert: 'Pro', Pro: 'Pro' };
-                const previous = record.userProgress[attempt.topic] || { level: 'Beginner', bestScore: 0, attempts: 0, accuracy: 0 };
+                record.userProgress ||= {};
+                const progressKey = getProgressKey(attempt.exam, attempt.subject, attempt.topic);
+                let previous = record.userProgress[progressKey];
+                if (!previous) {
+                    previous = getLegacyTopicProgress(record.userProgress, record.exam, attempt.exam, attempt.subject, attempt.topic, SUBJECT_TOPICS);
+                    if (previous) delete record.userProgress[attempt.topic];
+                }
+                previous ||= { level: 'Beginner', bestScore: 0, attempts: 0, accuracy: 0 };
                 const priorCount = Number(previous.attempts) || 0;
                 const priorTotalQuestions = Number(previous.totalQuestions) || priorCount * result.total;
                 const priorCorrectAnswers = Number(previous.correctAnswers)
                     || Math.round(((Number(previous.accuracy) || 0) / 100) * priorTotalQuestions);
                 const totalQuestions = priorTotalQuestions + result.total;
                 const correctAnswers = priorCorrectAnswers + result.correct;
-                record.userProgress[attempt.topic] = {
+                record.userProgress[progressKey] = {
                     exam: attempt.exam,
                     subject: attempt.subject,
                     topic: attempt.topic,

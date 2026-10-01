@@ -409,3 +409,13 @@ test('Supabase migration defines isolated application tables and server-only ato
     assert.match(importFunction, /from public\.app_user_state[\s\S]*?for\s+update/i);
     assert.match(importFunction, /if state_exists then[\s\S]*?else[\s\S]*?insert into public\.app_user_state/i);
 });
+
+test('role-scoped progress RPC projects each record exam and falls back only for legacy records', async () => {
+    const migration = await readFile(new URL('../supabase/migrations/202610010002_role_scoped_progress.sql', import.meta.url), 'utf8');
+    assert.match(migration, /create or replace function public\.commit_app_user_state/i);
+    assert.match(migration, /when progress_entry\.value->>'exam' = 'CONSTABLE' then 'CONSTABLE'/i);
+    assert.match(migration, /when progress_entry\.value->>'exam' = 'SI' then 'SI'/i);
+    assert.match(migration, /when next_data->>'exam' = 'CONSTABLE' then 'CONSTABLE'/i);
+    assert.match(migration, /progress_exam,/i);
+    assert.equal(/create table|alter table|drop table|drop column|truncate|delete from public\.app_users/i.test(migration), false);
+});
