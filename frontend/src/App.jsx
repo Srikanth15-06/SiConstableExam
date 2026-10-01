@@ -405,7 +405,7 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!isDriveAdminAuthorized) return undefined;
+    if (!currentMember?.id || currentView !== 'drive-notes') return undefined;
     let active = true;
     getAdminLearningVideos(adminVideoContext.exam, adminVideoContext.subject, adminVideoContext.topic)
       .then(({ videos }) => {
@@ -420,7 +420,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [isDriveAdminAuthorized, adminVideoContext]);
+  }, [currentView, currentMember?.id, adminVideoContext]);
 
   useEffect(() => {
     let active = true;
@@ -991,6 +991,7 @@ export default function App() {
 
   const handleOpenDriveLibrary = async () => {
     setCurrentView('drive-notes');
+    setIsLoadingAdminVideos(true);
     const requestSequence = ++driveRequestSequenceRef.current;
     setIsDriveNotesLoading(true);
     setDriveNotesError('');
@@ -1022,6 +1023,7 @@ export default function App() {
   const handleViewSelectedDriveNotes = async () => {
     const requestSequence = ++driveRequestSequenceRef.current;
     setCurrentView('drive-notes');
+    setIsLoadingAdminVideos(true);
     setIsDriveNotesLoading(true);
     setDriveNotesError('');
     setDriveCurrentFolders([]);
@@ -3050,101 +3052,92 @@ export default function App() {
                 </div>
               </div>
 
-              {isDriveAdminStatusLoaded && driveAdminAuthConfigured && (
+              {currentMember && (
                 <section aria-label="Topic learning video administration" className="space-y-4 border-b border-slate-800 pb-5">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <h3 className="text-sm font-bold text-slate-100">Topic Learning Videos</h3>
                       <p className="mt-1 text-xs text-slate-400">Manage the curated YouTube resources shown to candidates.</p>
                     </div>
-                    {isDriveAdminAuthorized && (
-                      <button type="button" onClick={() => void handleDriveAdminLogout()} aria-label="Lock admin controls" title="Lock admin controls" className="rounded-md border border-slate-700 p-2 text-slate-300 hover:bg-slate-800">
-                        <Lock className="h-4 w-4" />
-                      </button>
-                    )}
                   </div>
 
-                  {!isDriveAdminAuthorized ? (
-                    <p className="text-xs text-slate-400">Unlock the existing site administrator controls below to manage videos.</p>
-                  ) : (
-                    <>
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-                        <label className="text-xs font-semibold text-slate-300">
-                          Exam role
-                          <select value={adminVideoContext.exam} onChange={(event) => { setIsLoadingAdminVideos(true); setAdminLearningVideos([]); setAdminVideoContext((previous) => ({ ...previous, exam: event.target.value })); setAdminVideoForm({ id: '', title: '', youtubeUrl: '' }); setAdminVideoDeleteId(''); setAdminVideoNotice(''); setAdminVideoError(''); }} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
-                            <option value="SI">SI</option>
-                            <option value="CONSTABLE">Constable</option>
-                          </select>
-                        </label>
-                        <label className="text-xs font-semibold text-slate-300">
-                          Subject
-                          <select value={adminVideoContext.subject} onChange={(event) => { const subject = event.target.value; setIsLoadingAdminVideos(true); setAdminLearningVideos([]); setAdminVideoContext((previous) => ({ ...previous, subject, topic: SUBJECT_TOPICS[subject]?.[0] || '' })); setAdminVideoForm({ id: '', title: '', youtubeUrl: '' }); setAdminVideoDeleteId(''); setAdminVideoNotice(''); setAdminVideoError(''); }} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
-                            {Object.keys(SUBJECT_TOPICS).map((subject) => <option key={subject} value={subject}>{subject}</option>)}
-                          </select>
-                        </label>
-                        <label className="text-xs font-semibold text-slate-300">
-                          Topic
-                          <select value={adminVideoContext.topic} onChange={(event) => { setIsLoadingAdminVideos(true); setAdminLearningVideos([]); setAdminVideoContext((previous) => ({ ...previous, topic: event.target.value })); setAdminVideoForm({ id: '', title: '', youtubeUrl: '' }); setAdminVideoDeleteId(''); setAdminVideoNotice(''); setAdminVideoError(''); }} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
-                            {(SUBJECT_TOPICS[adminVideoContext.subject] || []).map((topic) => <option key={topic} value={topic}>{topic}</option>)}
-                          </select>
-                        </label>
-                      </div>
+                  <>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+                      <label className="text-xs font-semibold text-slate-300">
+                        Exam role
+                        <select value={adminVideoContext.exam} onChange={(event) => { setIsLoadingAdminVideos(true); setAdminLearningVideos([]); setAdminVideoContext((previous) => ({ ...previous, exam: event.target.value })); setAdminVideoForm({ id: '', title: '', youtubeUrl: '' }); setAdminVideoDeleteId(''); setAdminVideoNotice(''); setAdminVideoError(''); }} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+                          <option value="SI">SI</option>
+                          <option value="CONSTABLE">Constable</option>
+                        </select>
+                      </label>
+                      <label className="text-xs font-semibold text-slate-300">
+                        Subject
+                        <select value={adminVideoContext.subject} onChange={(event) => { const subject = event.target.value; setIsLoadingAdminVideos(true); setAdminLearningVideos([]); setAdminVideoContext((previous) => ({ ...previous, subject, topic: SUBJECT_TOPICS[subject]?.[0] || '' })); setAdminVideoForm({ id: '', title: '', youtubeUrl: '' }); setAdminVideoDeleteId(''); setAdminVideoNotice(''); setAdminVideoError(''); }} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+                          {Object.keys(SUBJECT_TOPICS).map((subject) => <option key={subject} value={subject}>{subject}</option>)}
+                        </select>
+                      </label>
+                      <label className="text-xs font-semibold text-slate-300">
+                        Topic
+                        <select value={adminVideoContext.topic} onChange={(event) => { setIsLoadingAdminVideos(true); setAdminLearningVideos([]); setAdminVideoContext((previous) => ({ ...previous, topic: event.target.value })); setAdminVideoForm({ id: '', title: '', youtubeUrl: '' }); setAdminVideoDeleteId(''); setAdminVideoNotice(''); setAdminVideoError(''); }} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+                          {(SUBJECT_TOPICS[adminVideoContext.subject] || []).map((topic) => <option key={topic} value={topic}>{topic}</option>)}
+                        </select>
+                      </label>
+                    </div>
 
-                      <div className="flex flex-wrap items-center justify-between gap-2">
-                        <p className="text-xs font-semibold text-slate-300">{adminLearningVideos.length} / 5 Videos</p>
-                        {adminLearningVideos.length >= 5 && <p className="text-xs text-amber-200">Maximum 5 learning videos allowed for this topic.</p>}
-                      </div>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <p className="text-xs font-semibold text-slate-300">{adminLearningVideos.length} / 5 Videos</p>
+                      {adminLearningVideos.length >= 5 && <p className="text-xs text-amber-200">Maximum 5 learning videos allowed for this topic.</p>}
+                    </div>
 
-                      {isLoadingAdminVideos ? <p role="status" className="text-xs text-slate-400">Loading Learning Videos...</p> : (
-                        <ol className="divide-y divide-slate-800 rounded-md border border-slate-800">
-                          {adminLearningVideos.map((video, index) => (
-                            <li key={video.id} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
-                              <div className="min-w-0">
-                                <p className="text-xs font-bold text-slate-300">{index + 1}. {video.title}</p>
-                                <a href={video.youtubeUrl} target="_blank" rel="noopener noreferrer" className="mt-1 block truncate text-[11px] text-teal-300 hover:text-teal-200">{video.youtubeUrl}</a>
-                              </div>
-                              <div className="flex shrink-0 gap-2">
-                                <button type="button" onClick={() => { setAdminVideoForm({ id: video.id, title: video.title, youtubeUrl: video.youtubeUrl }); setAdminVideoError(''); setAdminVideoNotice(''); }} aria-label={`Edit ${video.title}`} title="Edit video" className="rounded-md border border-slate-700 p-2 text-slate-300 hover:bg-slate-800"><Pencil className="h-4 w-4" /></button>
-                                <button type="button" onClick={() => { setAdminVideoDeleteId(video.id); setAdminVideoError(''); setAdminVideoNotice(''); }} aria-label={`Delete ${video.title}`} title="Delete video" className="rounded-md border border-rose-500/30 p-2 text-rose-200 hover:bg-rose-500/10"><Trash2 className="h-4 w-4" /></button>
-                              </div>
-                            </li>
-                          ))}
-                          {!adminLearningVideos.length && !isLoadingAdminVideos && <li className="p-3 text-xs text-slate-500">No learning videos added yet.</li>}
-                        </ol>
-                      )}
+                    {isLoadingAdminVideos ? <p role="status" className="text-xs text-slate-400">Loading Learning Videos...</p> : (
+                      <ol className="divide-y divide-slate-800 rounded-md border border-slate-800">
+                        {adminLearningVideos.map((video, index) => (
+                          <li key={video.id} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="min-w-0">
+                              <p className="text-xs font-bold text-slate-300">{index + 1}. {video.title}</p>
+                              <a href={video.youtubeUrl} target="_blank" rel="noopener noreferrer" className="mt-1 block truncate text-[11px] text-teal-300 hover:text-teal-200">{video.youtubeUrl}</a>
+                            </div>
+                            <div className="flex shrink-0 gap-2">
+                              <button type="button" onClick={() => { setAdminVideoForm({ id: video.id, title: video.title, youtubeUrl: video.youtubeUrl }); setAdminVideoError(''); setAdminVideoNotice(''); }} aria-label={`Edit ${video.title}`} title="Edit video" className="rounded-md border border-slate-700 p-2 text-slate-300 hover:bg-slate-800"><Pencil className="h-4 w-4" /></button>
+                              <button type="button" onClick={() => { setAdminVideoDeleteId(video.id); setAdminVideoError(''); setAdminVideoNotice(''); }} aria-label={`Delete ${video.title}`} title="Delete video" className="rounded-md border border-rose-500/30 p-2 text-rose-200 hover:bg-rose-500/10"><Trash2 className="h-4 w-4" /></button>
+                            </div>
+                          </li>
+                        ))}
+                        {!adminLearningVideos.length && !isLoadingAdminVideos && <li className="p-3 text-xs text-slate-500">No learning videos added yet.</li>}
+                      </ol>
+                    )}
 
-                      {adminVideoDeleteId && (
-                        <div className="flex flex-col gap-3 rounded-md border border-rose-500/30 bg-rose-950/20 p-3 sm:flex-row sm:items-center sm:justify-between">
-                          <p className="text-xs text-rose-100">Are you sure you want to delete this learning video?</p>
-                          <div className="flex gap-2">
-                            <button type="button" onClick={() => setAdminVideoDeleteId('')} disabled={isDeletingAdminVideo} className="rounded-md border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 disabled:opacity-50">Cancel</button>
-                            <button type="button" onClick={() => void handleDeleteAdminVideo()} disabled={isDeletingAdminVideo} className="rounded-md bg-rose-700 px-3 py-2 text-xs font-semibold text-white hover:bg-rose-600 disabled:opacity-50">{isDeletingAdminVideo ? 'Deleting...' : 'Delete'}</button>
-                          </div>
+                    {adminVideoDeleteId && (
+                      <div className="flex flex-col gap-3 rounded-md border border-rose-500/30 bg-rose-950/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+                        <p className="text-xs text-rose-100">Are you sure you want to delete this learning video?</p>
+                        <div className="flex gap-2">
+                          <button type="button" onClick={() => setAdminVideoDeleteId('')} disabled={isDeletingAdminVideo} className="rounded-md border border-slate-700 px-3 py-2 text-xs font-semibold text-slate-300 disabled:opacity-50">Cancel</button>
+                          <button type="button" onClick={() => void handleDeleteAdminVideo()} disabled={isDeletingAdminVideo} className="rounded-md bg-rose-700 px-3 py-2 text-xs font-semibold text-white hover:bg-rose-600 disabled:opacity-50">{isDeletingAdminVideo ? 'Deleting...' : 'Delete'}</button>
                         </div>
-                      )}
+                      </div>
+                    )}
 
-                      <form onSubmit={handleSaveAdminVideo} className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1.4fr_auto] sm:items-end">
-                        <label className="text-xs font-semibold text-slate-300">
-                          Video Title
-                          <input value={adminVideoForm.title} onChange={(event) => setAdminVideoForm((previous) => ({ ...previous, title: event.target.value }))} required maxLength={120} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" placeholder="Percentages Basics" />
-                        </label>
-                        <label className="text-xs font-semibold text-slate-300">
-                          YouTube URL
-                          <input type="url" value={adminVideoForm.youtubeUrl} onChange={(event) => setAdminVideoForm((previous) => ({ ...previous, youtubeUrl: event.target.value }))} required className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" placeholder="https://youtu.be/..." />
-                        </label>
-                        <button type="submit" disabled={isSavingAdminVideo || isLoadingAdminVideos || (!adminVideoForm.id && adminLearningVideos.length >= 5)} className="rounded-md bg-teal-700 px-4 py-2.5 text-xs font-bold text-white hover:bg-teal-600 disabled:cursor-not-allowed disabled:opacity-50">
-                          {isSavingAdminVideo ? adminVideoForm.id ? 'Updating...' : 'Saving...' : adminVideoForm.id ? 'Update Video' : '+ Add YouTube Video'}
-                        </button>
-                        {adminVideoForm.id && <button type="button" onClick={() => setAdminVideoForm({ id: '', title: '', youtubeUrl: '' })} disabled={isSavingAdminVideo} className="text-left text-xs font-semibold text-slate-400 hover:text-white sm:col-span-3">Cancel edit</button>}
-                      </form>
-                      {adminVideoNotice && <p role="status" className="text-xs text-emerald-200">{adminVideoNotice}</p>}
-                      {adminVideoError && <p role="alert" className="text-xs text-rose-200">{adminVideoError}</p>}
-                    </>
-                  )}
+                    <form onSubmit={handleSaveAdminVideo} className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1.4fr_auto] sm:items-end">
+                      <label className="text-xs font-semibold text-slate-300">
+                        Video Title
+                        <input value={adminVideoForm.title} onChange={(event) => setAdminVideoForm((previous) => ({ ...previous, title: event.target.value }))} required maxLength={120} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" placeholder="Percentages Basics" />
+                      </label>
+                      <label className="text-xs font-semibold text-slate-300">
+                        YouTube URL
+                        <input type="url" value={adminVideoForm.youtubeUrl} onChange={(event) => setAdminVideoForm((previous) => ({ ...previous, youtubeUrl: event.target.value }))} required className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" placeholder="https://youtu.be/..." />
+                      </label>
+                      <button type="submit" disabled={isSavingAdminVideo || isLoadingAdminVideos || (!adminVideoForm.id && adminLearningVideos.length >= 5)} className="rounded-md bg-teal-700 px-4 py-2.5 text-xs font-bold text-white hover:bg-teal-600 disabled:cursor-not-allowed disabled:opacity-50">
+                        {isSavingAdminVideo ? adminVideoForm.id ? 'Updating...' : 'Saving...' : adminVideoForm.id ? 'Update Video' : '+ Add YouTube Video'}
+                      </button>
+                      {adminVideoForm.id && <button type="button" onClick={() => setAdminVideoForm({ id: '', title: '', youtubeUrl: '' })} disabled={isSavingAdminVideo} className="text-left text-xs font-semibold text-slate-400 hover:text-white sm:col-span-3">Cancel edit</button>}
+                    </form>
+                    {adminVideoNotice && <p role="status" className="text-xs text-emerald-200">{adminVideoNotice}</p>}
+                    {adminVideoError && <p role="alert" className="text-xs text-rose-200">{adminVideoError}</p>}
+                  </>
                 </section>
               )}
 
-              {isDriveAdminStatusLoaded && !(isGoogleDriveConnected && driveConnectionStatus === 'connected') && (
+              {isDriveAdminStatusLoaded && (!(isGoogleDriveConnected && driveConnectionStatus === 'connected') || !isDriveAdminAuthorized) && (
                 <section aria-label="Google Drive administration" className="border-b border-slate-800 pb-4">
                   <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
                     <div>

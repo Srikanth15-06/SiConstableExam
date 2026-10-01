@@ -77,11 +77,24 @@ function handleStoreError(res, error, operation) {
     sendFailure(res, 503, 'LEARNING_VIDEOS_UNAVAILABLE', 'Learning videos are temporarily unavailable. Please try again.');
 }
 
-export function createTopicLearningVideoRouter({ dataStore, videoStore, sessions, requireAdmin }) {
+export function createTopicLearningVideoRouter({ dataStore, videoStore, sessions, allowedOrigins = new Set(), rateLimiter = (_req, _res, next) => next() }) {
     const router = Router();
     const authenticate = createAuthenticationMiddleware(sessions);
+    const requireTrustedOrigin = (req, res, next) => {
+        let origin;
+        try {
+            origin = req.get('origin') ? new URL(req.get('origin')).origin : '';
+        } catch {
+            origin = '';
+        }
+        if (!origin || !allowedOrigins.has(origin)) {
+            sendFailure(res, 403, 'VIDEO_ORIGIN_DENIED', 'This request origin is not allowed. Reload the application and try again.');
+            return;
+        }
+        next();
+    };
 
-    router.get('/learning-videos', authenticate, async (req, res) => {
+    router.get('/learning-videos', authenticate, rateLimiter, async (req, res) => {
         const subject = String(req.query.subject || '').trim();
         const topic = String(req.query.topic || '').trim();
         if (!validTopic(subject, topic)) {
@@ -99,7 +112,7 @@ export function createTopicLearningVideoRouter({ dataStore, videoStore, sessions
         }
     });
 
-    router.get('/admin/learning-videos', requireAdmin, async (req, res) => {
+    router.get('/admin/learning-videos', authenticate, rateLimiter, async (req, res) => {
         const examType = String(req.query.exam || '').trim().toUpperCase();
         const subject = String(req.query.subject || '').trim();
         const topic = String(req.query.topic || '').trim();
@@ -111,11 +124,11 @@ export function createTopicLearningVideoRouter({ dataStore, videoStore, sessions
             const videos = await videoStore.list({ examType, subject, topic });
             res.json({ success: true, videos: videos.map(publicVideo) });
         } catch (error) {
-            handleStoreError(res, error, 'admin-read');
+            handleStoreError(res, error, 'candidate-management-read');
         }
     });
 
-    router.post('/admin/learning-videos', requireAdmin, async (req, res) => {
+    router.post('/admin/learning-videos', authenticate, requireTrustedOrigin, rateLimiter, async (req, res) => {
         const input = parseVideoInput(req.body);
         if (!input) {
             sendFailure(res, 400, 'INVALID_LEARNING_VIDEO', 'Enter a valid topic, video title, and YouTube URL.');
@@ -129,7 +142,7 @@ export function createTopicLearningVideoRouter({ dataStore, videoStore, sessions
         }
     });
 
-    router.patch('/admin/learning-videos/:id', requireAdmin, async (req, res) => {
+    router.patch('/admin/learning-videos/:id', authenticate, requireTrustedOrigin, rateLimiter, async (req, res) => {
         const title = typeof req.body?.title === 'string' ? req.body.title.normalize('NFKC').trim() : '';
         const youtube = parseYouTubeUrl(req.body?.youtubeUrl || req.body?.youtube_url);
         if (!/^[a-f\d-]{36}$/i.test(req.params.id) || !title || title.length > 120 || !youtube) {
@@ -144,7 +157,7 @@ export function createTopicLearningVideoRouter({ dataStore, videoStore, sessions
         }
     });
 
-    router.delete('/admin/learning-videos/:id', requireAdmin, async (req, res) => {
+    router.delete('/admin/learning-videos/:id', authenticate, requireTrustedOrigin, rateLimiter, async (req, res) => {
         if (!/^[a-f\d-]{36}$/i.test(req.params.id)) {
             sendFailure(res, 400, 'INVALID_LEARNING_VIDEO', 'The learning video identifier is invalid.');
             return;

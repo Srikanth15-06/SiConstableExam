@@ -268,7 +268,8 @@ app.use('/api', createTopicLearningVideoRouter({
     dataStore: candidateDataStore,
     videoStore: createSupabaseLearningVideoStore(candidateDataStore),
     sessions: candidateSessions,
-    requireAdmin: requireDriveAdmin
+    allowedOrigins,
+    rateLimiter: userDataRateLimiter
 }));
 
 app.post('/api/drive/admin/session', adminLoginRateLimiter, (req, res) => {

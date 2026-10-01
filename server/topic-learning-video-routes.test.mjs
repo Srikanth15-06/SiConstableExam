@@ -42,14 +42,24 @@ async function createServer(context) {
     const sessions = new InMemorySessionStore();
     const userIds = { si: `usr_${randomUUID()}`, constable: `usr_${randomUUID()}` };
     const cookies = Object.fromEntries(Object.entries(userIds).map(([role, userId]) => [role, sessions.create(userId).sessionId]));
+    const allowedOrigins = new Set();
     const dataStore = { async getUserData(userId) { return { exam: userId === userIds.constable ? 'CONSTABLE' : 'SI' }; } };
     const videoStore = createVideoStore();
-    const requireAdmin = (req, res, next) => req.get('x-test-admin') === 'authorized' ? next() : res.status(401).json({ success: false, code: 'AUTH_REQUIRED' });
-    app.use('/api', createTopicLearningVideoRouter({ dataStore, videoStore, sessions, requireAdmin }));
+    app.use('/api', createTopicLearningVideoRouter({ dataStore, videoStore, sessions, allowedOrigins }));
     const server = app.listen(0, '127.0.0.1');
     await once(server, 'listening');
     context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
-    return { baseUrl: `http://127.0.0.1:${server.address().port}`, cookies, videoStore };
+    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+    allowedOrigins.add(baseUrl);
+    return { baseUrl, cookies, videoStore };
+}
+
+function candidateHeaders(cookie, origin, includeOrigin = true) {
+    return {
+        Cookie: `ts_police_session=${cookie}`,
+        ...(includeOrigin ? { Origin: origin } : {}),
+        'Content-Type': 'application/json'
+    };
 }
 
 test('YouTube URL parser accepts watch, short, and shorts URLs and rejects external URLs', () => {
@@ -73,13 +83,15 @@ test('candidate video reads use authenticated role and isolate role-specific top
     }
 });
 
-test('video administration requires admin authorization and caps each role/topic at five', async (context) => {
-    const { baseUrl } = await createServer(context);
+test('signed-in candidates can manage videos with trusted origins and the five-video cap', async (context) => {
+    const { baseUrl, cookies } = await createServer(context);
     const endpoint = `${baseUrl}/api/admin/learning-videos`;
     const body = (title) => ({ exam: 'SI', subject: 'Arithmetic', topic: 'Percentages', title, youtubeUrl: VIDEO_URL });
     assert.equal((await fetch(endpoint, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body('Unauthorized')) })).status, 401);
+    assert.equal((await fetch(endpoint, { method: 'POST', headers: candidateHeaders(cookies.si, baseUrl, false), body: JSON.stringify(body('Missing origin')) })).status, 403);
+    assert.equal((await fetch(endpoint, { method: 'POST', headers: candidateHeaders(cookies.si, 'https://untrusted.example'), body: JSON.stringify(body('Untrusted origin')) })).status, 403);
 
-    const headers = { 'Content-Type': 'application/json', 'X-Test-Admin': 'authorized' };
+    const headers = candidateHeaders(cookies.si, baseUrl);
     for (let index = 1; index <= 5; index += 1) {
         const response = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify(body(`Video ${index}`)) });
         assert.equal(response.status, 201);
@@ -89,17 +101,21 @@ test('video administration requires admin authorization and caps each role/topic
     assert.match((await sixth.json()).message, /Maximum 5/);
     const invalid = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ ...body('Invalid'), youtubeUrl: 'https://example.com/video' }) });
     assert.equal(invalid.status, 400);
+    const listed = await fetch(`${endpoint}?exam=SI&subject=Arithmetic&topic=Percentages`, { headers });
+    assert.equal(listed.status, 200);
+    assert.equal((await listed.json()).videos.length, 5);
 });
 
-test('video administration supports update and delete', async (context) => {
-    const { baseUrl } = await createServer(context);
+test('different signed-in candidates can update and delete shared videos', async (context) => {
+    const { baseUrl, cookies } = await createServer(context);
     const endpoint = `${baseUrl}/api/admin/learning-videos`;
-    const headers = { 'Content-Type': 'application/json', 'X-Test-Admin': 'authorized' };
-    const created = await fetch(endpoint, { method: 'POST', headers, body: JSON.stringify({ exam: 'CONSTABLE', subject: 'Arithmetic', topic: 'Percentages', title: 'Before', youtubeUrl: VIDEO_URL }) });
+    const creatorHeaders = candidateHeaders(cookies.si, baseUrl);
+    const managerHeaders = candidateHeaders(cookies.constable, baseUrl);
+    const created = await fetch(endpoint, { method: 'POST', headers: creatorHeaders, body: JSON.stringify({ exam: 'CONSTABLE', subject: 'Arithmetic', topic: 'Percentages', title: 'Before', youtubeUrl: VIDEO_URL }) });
     const video = (await created.json()).video;
-    const updated = await fetch(`${endpoint}/${video.id}`, { method: 'PATCH', headers, body: JSON.stringify({ title: 'After', youtubeUrl: `https://www.youtube.com/watch?v=${VIDEO_ID}` }) });
+    const updated = await fetch(`${endpoint}/${video.id}`, { method: 'PATCH', headers: managerHeaders, body: JSON.stringify({ title: 'After', youtubeUrl: `https://www.youtube.com/watch?v=${VIDEO_ID}` }) });
     assert.equal((await updated.json()).video.title, 'After');
-    const deleted = await fetch(`${endpoint}/${video.id}`, { method: 'DELETE', headers });
+    const deleted = await fetch(`${endpoint}/${video.id}`, { method: 'DELETE', headers: managerHeaders });
     assert.equal(deleted.status, 200);
     assert.equal((await deleted.json()).success, true);
 });

@@ -248,6 +248,10 @@ test('@desktop signup, login, planner, quiz, isolation, Drive status, and logout
 
         await page.getByRole('button', { name: 'Notes Library', exact: true }).click();
         await expect(page.getByRole('heading', { name: 'Subjects' })).toBeVisible();
+        await expect(page.getByRole('heading', { name: 'Topic Learning Videos' })).toBeVisible();
+        await expect(page.getByLabel('Video Title')).toBeVisible();
+        await expect(page.getByLabel('YouTube URL')).toBeVisible();
+        await expect(page.getByRole('button', { name: '+ Add YouTube Video' })).toBeVisible();
         const driveStatus = await page.evaluate(async () => {
             const response = await fetch('/api/drive/auth/status');
             return { status: response.status, body: await response.json() };
