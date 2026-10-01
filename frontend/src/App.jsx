@@ -2819,7 +2819,7 @@ export default function App() {
                     ) : (
                       <form onSubmit={handleDriveAdminLogin} className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-end">
                         <label className="min-w-0 flex-1 text-xs font-semibold text-slate-300" htmlFor="drive-admin-key">
-                          Notes Library administrator key
+                          Site administrator only: Notes Library key
                           <input
                             id="drive-admin-key"
                             type="password"
@@ -2829,6 +2829,7 @@ export default function App() {
                             className="mt-1 w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-slate-100 outline-none focus:border-teal-500"
                           />
                         </label>
+                        <p className="text-xs text-slate-400 sm:max-w-56">Candidates can browse the shared Notes Library without this key.</p>
                         <button
                           type="submit"
                           disabled={!driveAdminKey || isDriveAdminLoggingIn}
