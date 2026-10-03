@@ -1396,7 +1396,7 @@ export default function App() {
 
     try {
       const hasValidQuestionCount = activeTestMode === 'revision-mock'
-        ? [60, 90, 100, 150].includes(activeTestQuestions.length)
+        ? [10, 20, 30, 40, 50, 60, 90, 120].includes(activeTestQuestions.length)
         : activeTestQuestions.length === 10;
       if (!hasValidQuestionCount) {
         setQuestionGenerationError('This test question set is incomplete and cannot be scored. Please generate a new test.');
@@ -2562,13 +2562,13 @@ export default function App() {
                   <label className="text-xs font-semibold text-slate-300">
                     Number of questions
                     <select value={revisionMockQuestionCount} onChange={(event) => setRevisionMockQuestionCount(Number(event.target.value))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white">
-                      {[60, 90, 100, 150].map((count) => <option key={count} value={count}>{count} questions</option>)}
+                      {[10, 20, 30, 40, 50, 60, 90, 120].map((count) => <option key={count} value={count}>{count} questions</option>)}
                     </select>
                   </label>
                   <label className="text-xs font-semibold text-slate-300">
                     Test duration
                     <select value={revisionMockDurationMinutes} onChange={(event) => setRevisionMockDurationMinutes(Number(event.target.value))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white">
-                      {[60, 90, 120].map((minutes) => <option key={minutes} value={minutes}>{minutes} minutes</option>)}
+                      {[10, 20, 30, 40, 50, 60, 90, 120].map((minutes) => <option key={minutes} value={minutes}>{minutes} minutes</option>)}
                     </select>
                   </label>
                 </div>

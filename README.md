@@ -15,7 +15,7 @@ This repository has two separately installed parts:
 - Select an exam, subject, topic, and difficulty from the built-in syllabus.
 - Generate ten validated practice questions through Gemini, create study notes through Groq, and ask contextual study questions through OpenRouter.
 - Take practice tests and review answers, explanations, shortcuts, scores, and test history.
-- Use the dashboard's **Syllabus Modules → All · Revision Mock Tests** entry to create a 60-, 90-, or 120-minute test with 60, 90, 100, or 150 questions sampled from practiced topics across subjects. Topic selection prioritizes syllabus weightage and areas needing revision; repeat mocks rotate through the practiced-topic pool. Scores update each topic's progress independently.
+- Use the dashboard's **Syllabus Modules → All · Revision Mock Tests** entry to create a 10-, 20-, 30-, 40-, 50-, 60-, 90-, or 120-minute test with 10, 20, 30, 40, 50, 60, 90, or 120 questions sampled from practiced topics across subjects. Topic selection prioritizes syllabus weightage and areas needing revision; repeat mocks rotate through the practiced-topic pool. Scores update each topic's progress independently.
 - Track topic progress and use the Smart Study Planner for revision and manual tasks.
 - Generate an AI-ranked full-syllabus schedule personalized to exam role, remaining days, daily study time, topic completion, accuracy, practice activity, and exam weightage. The schedule assigns every syllabus topic, adjusts session lengths when time is tight, and refreshes as progress changes.
 - Connect Google Drive to browse topic folders, preview or download notes, provision subject/topic folders, and upload supported files (up to 20 MB).

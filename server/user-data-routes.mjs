@@ -8,8 +8,8 @@ import { generateQuestions } from './ai-service.mjs';
 import { createAuthenticationMiddleware } from './auth-service.mjs';
 
 const DIFFICULTIES = new Set(['Beginner', 'Intermediate', 'Expert', 'Pro']);
-const MOCK_QUESTION_COUNTS = new Set([60, 90, 100, 150]);
-const MOCK_DURATION_MINUTES = new Set([60, 90, 120]);
+const MOCK_QUESTION_COUNTS = new Set([10, 20, 30, 40, 50, 60, 90, 120]);
+const MOCK_DURATION_MINUTES = new Set([10, 20, 30, 40, 50, 60, 90, 120]);
 const MAX_PLANNER_BYTES = 250_000;
 const MAX_PLANNER_TASKS = 1000;
 const passThrough = (_req, _res, next) => next();

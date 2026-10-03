@@ -182,7 +182,7 @@ test('revision mocks use practiced topics, configurable lengths, and update each
         body: JSON.stringify({ exam: 'SI', questionCount, durationMinutes })
     });
 
-    const invalid = await createMock(50, 60);
+    const invalid = await createMock(55, 60);
     assert.equal(invalid.status, 400);
     assert.equal((await invalid.json()).code, 'INVALID_MOCK_CONFIGURATION');
     const noTopics = await createMock(60, 60);
@@ -249,6 +249,28 @@ test('revision mocks use practiced topics, configurable lengths, and update each
         assert.equal(progress.correctAnswers, 36);
         assert.equal(progress.accuracy, 90);
     }
+});
+
+test('revision mock route accepts the configured short and long lengths', async (context) => {
+    const { server, baseUrl, dataStore, generated } = await createServer();
+    context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+    const user = await signUp(baseUrl, 'Candidate', 'revision-mock-options@example.test');
+    const record = dataStore.records.get(user.user.userId);
+    record.userProgress[getProgressKey('SI', 'Arithmetic', 'Percentages')] = {
+        exam: 'SI', subject: 'Arithmetic', topic: 'Percentages', level: 'Beginner',
+        attempts: 1, bestScore: 6, correctAnswers: 6, totalQuestions: 10, accuracy: 60
+    };
+
+    const response = await fetch(`${baseUrl}/api/tests/mock`, {
+        method: 'POST',
+        headers: { ...authHeaders(user.cookie), 'Idempotency-Key': randomUUID() },
+        body: JSON.stringify({ exam: 'SI', questionCount: 10, durationMinutes: 10 })
+    });
+    const { attempt } = await response.json();
+    assert.equal(response.status, 201);
+    assert.equal(attempt.durationSeconds, 600);
+    assert.equal(attempt.questions.length, 10);
+    assert.equal(generated.length, 1);
 });
 
 test('repeated test creation with the same idempotency key reuses one attempt', async (context) => {
