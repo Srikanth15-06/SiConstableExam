@@ -3798,6 +3798,57 @@ export default function App() {
                 </div>
               </div>
 
+              <section aria-labelledby="developer-details-heading" className="overflow-hidden rounded-2xl border border-teal-500/20 bg-gradient-to-br from-slate-800 via-slate-800 to-teal-950/40 p-6 shadow-xl">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.2em] text-teal-300">About this platform</p>
+                    <h3 id="developer-details-heading" className="mt-2 text-xl font-bold text-white">Developer Details</h3>
+                    <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
+                      Beepali Srikanth builds tools to help Telangana Police SI and Constable candidates prepare with AI-powered practice, personalized study schedules, and topic-wise revision.
+                    </p>
+                  </div>
+                  <a
+                    href="https://my-portfolio-v0ez.onrender.com/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex shrink-0 items-center justify-center rounded-lg border border-teal-400/30 bg-teal-500/10 px-4 py-2.5 text-sm font-bold text-teal-200 transition hover:bg-teal-500/20"
+                  >
+                    Visit Portfolio
+                    <span className="sr-only"> (opens in a new tab)</span>
+                  </a>
+                </div>
+                <dl className="mt-5 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <div className="rounded-xl border border-slate-700/80 bg-slate-900/60 p-4">
+                    <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">Name</dt>
+                    <dd className="mt-1 text-sm font-bold text-white">Beepali Srikanth</dd>
+                  </div>
+                  <div className="rounded-xl border border-slate-700/80 bg-slate-900/60 p-4">
+                    <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">Email</dt>
+                    <dd className="mt-1 text-sm font-bold">
+                      <a href="mailto:beepalisrikanth@gmail.com" className="break-all text-blue-300 hover:text-blue-200">beepalisrikanth@gmail.com</a>
+                    </dd>
+                  </div>
+                  <div className="rounded-xl border border-slate-700/80 bg-slate-900/60 p-4">
+                    <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">Contact</dt>
+                    <dd className="mt-1 text-sm font-bold">
+                      <a href="tel:+919502993964" className="text-blue-300 hover:text-blue-200">+91 9502993964</a>
+                    </dd>
+                  </div>
+                  <div className="rounded-xl border border-slate-700/80 bg-slate-900/60 p-4">
+                    <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">Portfolio</dt>
+                    <dd className="mt-1 text-sm font-bold">
+                      <a href="https://my-portfolio-v0ez.onrender.com/" target="_blank" rel="noopener noreferrer" className="break-all text-blue-300 hover:text-blue-200">
+                        Beepalisrikanth
+                        <span className="sr-only"> (opens in a new tab)</span>
+                      </a>
+                    </dd>
+                  </div>
+                </dl>
+                <p className="mt-4 border-t border-slate-700/70 pt-4 text-xs text-slate-400">
+                  TS Police AI Prep · Telangana SI &amp; Constable exam preparation
+                </p>
+              </section>
+
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <div className="bg-slate-800 border border-slate-700 rounded-xl p-4">
                   <p className="text-xs text-slate-400">Total Attempts</p>
