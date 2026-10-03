@@ -15,7 +15,8 @@ This repository has two separately installed parts:
 - Select an exam, subject, topic, and difficulty from the built-in syllabus.
 - Generate ten validated practice questions through Gemini, create study notes through Groq, and ask contextual study questions through OpenRouter.
 - Take practice tests and review answers, explanations, shortcuts, scores, and test history.
-- Track topic progress and use the study planner to prioritize revision.
+- Track topic progress and use the Smart Study Planner for revision and manual tasks.
+- Generate an AI-ranked full-syllabus schedule personalized to exam role, remaining days, daily study time, topic completion, accuracy, practice activity, and exam weightage. The schedule assigns every syllabus topic, adjusts session lengths when time is tight, and refreshes as progress changes.
 - Connect Google Drive to browse topic folders, preview or download notes, provision subject/topic folders, and upload supported files (up to 20 MB).
 - Secure candidate accounts with Supabase-backed sessions, progress, test history, and planner data.
 

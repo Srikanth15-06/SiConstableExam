@@ -514,26 +514,34 @@ export function buildPlannerSnapshot(member, examType, subjectTopics = {}) {
         topics.forEach((topic) => {
             const defaultWeightage = DEFAULT_TOPIC_WEIGHTAGE[normalizedExam]?.[subject]?.[topic] ?? 1;
             const relevantAttempts = history.filter((attempt) => attempt.subject === subject && attempt.topic === topic);
-            const attempted = relevantAttempts.reduce((sum, attempt) => sum + Number(attempt.total || attempt.questions?.length || 0), 0);
+            const currentProgress = getTopicProgress(scopedProgress, normalizedExam, subject, topic) || {};
+            const attemptedQuestions = relevantAttempts.reduce((sum, attempt) => sum + Number(attempt.total || attempt.questions?.length || 0), 0)
+                || Number(currentProgress.totalQuestions)
+                || (Number(currentProgress.attempts) || 0) * 10;
             const correct = relevantAttempts.reduce((sum, attempt) => sum + Number(attempt.correct || attempt.score || 0), 0);
             const incorrect = relevantAttempts.reduce((sum, attempt) => sum + Number(attempt.incorrect || 0), 0);
             const unanswered = relevantAttempts.reduce((sum, attempt) => sum + Number(attempt.unanswered || 0), 0);
+            const storedAccuracy = Number.isFinite(Number(currentProgress.accuracy))
+                ? Number(currentProgress.accuracy)
+                : Number(currentProgress.totalQuestions) > 0
+                    ? Math.round((Number(currentProgress.correctAnswers || 0) / Number(currentProgress.totalQuestions)) * 100)
+                    : Math.round((Number(currentProgress.bestScore) || 0) * 10);
             const accuracy = relevantAttempts.length
                 ? Math.round(relevantAttempts.reduce((sum, attempt) => sum + Number(attempt.accuracy || 0), 0) / relevantAttempts.length)
-                : 0;
+                : storedAccuracy;
             const recentAttempts = relevantAttempts.slice(0, 3);
             const recentAccuracy = recentAttempts.length
                 ? Math.round(recentAttempts.reduce((sum, attempt) => sum + Number(attempt.accuracy || 0), 0) / recentAttempts.length)
-                : 0;
-            const currentProgress = getTopicProgress(scopedProgress, normalizedExam, subject, topic) || {};
-            const completion = clamp(Math.round(((Number(currentProgress.attempts || relevantAttempts.length) * 14) + (attempted * 3) + (accuracy * 0.4)) / 1.75), 0, 100);
+                : accuracy;
+            const attemptCount = relevantAttempts.length || Number(currentProgress.attempts) || 0;
+            const completion = clamp(Math.round(((Number(currentProgress.attempts || relevantAttempts.length) * 14) + (attemptedQuestions * 3) + (accuracy * 0.4)) / 1.75), 0, 100);
             const weightage = resolveTopicWeightage(normalizedExam, subject, topic, {});
             const daysRemaining = daysRemainingForExam(normalizedExam);
             const priority = calculateTopicPriority({
                 accuracy,
                 completion,
                 weightage,
-                attempted: relevantAttempts.length,
+                attempted: attemptCount,
                 recentAccuracy,
                 daysRemaining,
                 revisionRequired: accuracy < 70 || completion < 65
@@ -546,7 +554,7 @@ export function buildPlannerSnapshot(member, examType, subjectTopics = {}) {
                 examType: normalizedExam,
                 subject,
                 topic,
-                attempted: relevantAttempts.length,
+                attempted: attemptCount,
                 correct,
                 incorrect,
                 unanswered,

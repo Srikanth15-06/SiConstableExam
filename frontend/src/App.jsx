@@ -20,8 +20,10 @@ import {
   getProgressColorClass,
   getStatusColorClass,
   mergePlannerSnapshot,
-  resolveTopicWeightage
+  resolveTopicWeightage,
+  daysRemainingForExam
 } from './planner-utils.js';
+import { buildAiSchedulePrompt, buildAiStudySchedule, parseAiScheduleResponse } from './ai-study-schedule.js';
 
 const getTopicWeightage = (exam, subject, topic) => {
   const weightage = resolveTopicWeightage(exam, subject, topic, {});
@@ -99,6 +101,8 @@ const getExamCountdown = (targetTime, now) => {
   };
 };
 
+const getLocalDateKey = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
 function initializeExamAudio(contextRef) {
   if (typeof window === 'undefined') return;
   try {
@@ -147,7 +151,8 @@ const createEmptyPlannerState = (member = null) => ({
   generatedAt: null,
   summary: {},
   topicMetrics: [],
-  schedule: []
+  schedule: [],
+  aiScheduleDailyMinutes: 180
 });
 
 const DIFFICULTY_LEVELS = ["Beginner", "Intermediate", "Expert", "Pro"];
@@ -208,6 +213,12 @@ export default function App() {
   const [isLegacyImporting, setIsLegacyImporting] = useState(false);
   const [legacyArchive, setLegacyArchive] = useState(null);
   const [plannerData, setPlannerData] = useState(() => createEmptyPlannerState());
+  const [aiScheduleDailyMinutes, setAiScheduleDailyMinutes] = useState(180);
+  const [aiStudySchedule, setAiStudySchedule] = useState(null);
+  const [isAiScheduleLoading, setIsAiScheduleLoading] = useState(false);
+  const [aiScheduleError, setAiScheduleError] = useState('');
+  const [showFullAiSchedule, setShowFullAiSchedule] = useState(false);
+  const [aiScheduleRefreshToken, setAiScheduleRefreshToken] = useState(0);
   const [plannerMonth, setPlannerMonth] = useState(new Date().getMonth());
   const [plannerYear, setPlannerYear] = useState(new Date().getFullYear());
   const [plannerSelectedDate, setPlannerSelectedDate] = useState(new Date().toISOString().split('T')[0]);
@@ -232,6 +243,7 @@ export default function App() {
   const plannerSaveFailedRef = useRef(false);
   const answerSaveFailedRef = useRef(false);
   const submissionFailedRef = useRef(false);
+  const aiScheduleRequestRef = useRef(0);
 
   // Application View Navigation
   const [currentView, setCurrentView] = useState('login'); // 'login', 'signup', 'dashboard', 'topics', 'topic-detail', 'test', 'result', 'ai-tutor', 'profile'
@@ -569,6 +581,9 @@ export default function App() {
     setDriveCurrentTopic('');
     setDrivePreviewFile(null);
     setPlannerData(createEmptyPlannerState());
+    setAiScheduleDailyMinutes(180);
+    setAiStudySchedule(null);
+    setAiScheduleError('');
     setLegacyArchive(null);
     setPlannerSelectedDate(new Date().toISOString().split('T')[0]);
   };
@@ -577,7 +592,67 @@ export default function App() {
     if (!currentMember) return plannerData || createEmptyPlannerState();
     return mergePlannerSnapshot(plannerData, { ...currentMember, userProgress, testHistory }, selectedExam);
   }, [currentMember, selectedExam, plannerData, userProgress, testHistory]);
+  const aiScheduleTodayKey = getLocalDateKey(new Date(countdownNow));
+  const aiScheduleInput = useMemo(() => {
+    const today = new Date(`${aiScheduleTodayKey}T12:00:00`);
+    return {
+      topicMetrics: plannerViewData?.topicMetrics || [],
+      examType: selectedExam,
+      dailyMinutes: aiScheduleDailyMinutes,
+      daysRemaining: daysRemainingForExam(selectedExam, today),
+      today
+    };
+  }, [plannerViewData, selectedExam, aiScheduleDailyMinutes, aiScheduleTodayKey]);
+  const aiScheduleInputKey = JSON.stringify({
+    examType: aiScheduleInput.examType,
+    dailyMinutes: aiScheduleInput.dailyMinutes,
+    daysRemaining: aiScheduleInput.daysRemaining,
+    today: getLocalDateKey(aiScheduleInput.today),
+    topicMetrics: aiScheduleInput.topicMetrics.map(({ subject, topic, weightage, accuracy, completion, recentAccuracy, attempted, recommendedMinutes, priority }) => [
+      subject, topic, weightage, accuracy, completion, recentAccuracy, attempted, recommendedMinutes, priority
+    ])
+  });
   const selectedPlannerTasks = (plannerViewData?.schedule || []).filter((task) => (task.examType || plannerViewData?.examType) === selectedExam);
+
+  useEffect(() => {
+    if (currentView !== 'ai-schedule' || !currentMember) return undefined;
+    const requestId = ++aiScheduleRequestRef.current;
+    let cancelled = false;
+    const generateSchedule = async () => {
+      setIsAiScheduleLoading(true);
+      setAiScheduleError('');
+      setAiStudySchedule(null);
+      try {
+        const reply = await sendChatMessage({
+          exam: normalizeExamForRequest(aiScheduleInput.examType),
+          subject: 'General Studies',
+          topic: 'Full syllabus study schedule',
+          difficulty: 'Personalized',
+          syllabus: SUBJECT_TOPICS,
+          messages: [{
+            role: 'user',
+            content: buildAiSchedulePrompt(aiScheduleInput.topicMetrics, aiScheduleInput)
+          }]
+        });
+        const aiPlan = parseAiScheduleResponse(reply, aiScheduleInput.topicMetrics.length);
+        const schedule = buildAiStudySchedule(aiScheduleInput.topicMetrics, aiPlan.priorityTopicIds, aiScheduleInput);
+        if (!cancelled && requestId === aiScheduleRequestRef.current) {
+          setAiStudySchedule({ ...schedule, strategy: aiPlan.strategy, generatedAt: new Date().toISOString() });
+        }
+      } catch (error) {
+        if (!cancelled && requestId === aiScheduleRequestRef.current) {
+          setAiScheduleError(getSafeAiMessage(error, 'Unable to create your AI study schedule. Please try again.'));
+        }
+      } finally {
+        if (!cancelled && requestId === aiScheduleRequestRef.current) setIsAiScheduleLoading(false);
+      }
+    };
+    void generateSchedule();
+    return () => {
+      cancelled = true;
+      if (requestId === aiScheduleRequestRef.current) aiScheduleRequestRef.current += 1;
+    };
+  }, [currentView, currentMember, aiScheduleInput, aiScheduleInputKey, aiScheduleRefreshToken]);
 
   const savePlannerSnapshot = useEffectEvent(async (snapshot) => {
     try {
@@ -630,6 +705,8 @@ export default function App() {
     setCurrentMember(member);
     setLegacyArchive(data.legacyArchive || null);
     setPlannerData(plannerSnapshot);
+    setAiScheduleDailyMinutes(Number(plannerSnapshot.aiScheduleDailyMinutes) || 180);
+    setAiStudySchedule(null);
     setSelectedExam(data.exam || 'SI');
     const loadedHistory = (data.testHistory || []).map((attempt) => ({ ...attempt, id: attempt.id || attempt.attemptId }));
     setUserProgress(normalizeUserProgress(data.userProgress || {}, member.exam, loadedHistory, SUBJECT_TOPICS));
@@ -1432,6 +1509,14 @@ export default function App() {
     }));
   };
 
+  const handleAiScheduleTimeChange = (event) => {
+    const dailyMinutes = Number(event.target.value);
+    if (!Number.isInteger(dailyMinutes) || dailyMinutes < 30 || dailyMinutes > 720) return;
+    setAiScheduleDailyMinutes(dailyMinutes);
+    plannerDirtyRef.current = true;
+    setPlannerData((previous) => ({ ...previous, aiScheduleDailyMinutes: dailyMinutes }));
+  };
+
   const handleAddPlannerTask = (event) => {
     event.preventDefault();
     if (!currentMember) return;
@@ -1775,6 +1860,14 @@ export default function App() {
               <span>Smart Study Planner</span>
             </button>
             <button
+              onClick={() => { setShowFullAiSchedule(false); setCurrentView('ai-schedule'); }}
+              className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition ${currentView === 'ai-schedule' ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
+                }`}
+            >
+              <Sparkles className="w-4 h-4 text-amber-300" />
+              <span>AI Study Schedule</span>
+            </button>
+            <button
               onClick={() => setCurrentView('topics')}
               className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-sm font-semibold transition ${currentView === 'topics' || currentView === 'topic-detail' ? 'bg-blue-600/20 text-blue-400 border border-blue-500/30' : 'text-slate-400 hover:bg-slate-700/50 hover:text-slate-200'
                 }`}
@@ -2014,6 +2107,144 @@ export default function App() {
                   </ResponsiveContainer>
                 </div>
               </div>
+            </div>
+          )}
+
+          {currentView === 'ai-schedule' && (
+            <div className="mx-auto max-w-6xl space-y-6">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-amber-300">Personalized with AI</p>
+                  <h2 className="mt-2 text-3xl font-bold text-white">{selectedExam === 'CONSTABLE' ? 'TS Constable' : 'TS SI'} study schedule</h2>
+                  <p className="mt-2 max-w-2xl text-sm text-slate-400">The AI reprioritizes the full syllabus using your practice, accuracy, topic completion, exam weightage, and time remaining. It refreshes when your progress or study time changes.</p>
+                </div>
+                <div className="flex flex-wrap items-end gap-3">
+                  <label className="text-xs font-semibold text-slate-300">
+                    Available study time per day
+                    <select
+                      aria-label="Available study time per day"
+                      value={aiScheduleDailyMinutes}
+                      onChange={handleAiScheduleTimeChange}
+                      className="mt-1 block rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                    >
+                      {Array.from({ length: 16 }, (_, index) => (index + 1) * 30).map((minutes) => (
+                        <option key={minutes} value={minutes}>{minutes / 60} {minutes === 30 ? 'hour' : 'hours'}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setAiScheduleRefreshToken((token) => token + 1)}
+                    disabled={isAiScheduleLoading}
+                    className="inline-flex items-center gap-2 rounded-lg bg-indigo-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-indigo-500 disabled:cursor-wait disabled:opacity-60"
+                  >
+                    <RefreshCw className={`h-4 w-4 ${isAiScheduleLoading ? 'animate-spin' : ''}`} />
+                    {isAiScheduleLoading ? 'Updating schedule…' : 'Regenerate schedule'}
+                  </button>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                {[
+                  { label: 'Days to exam', value: aiScheduleInput.daysRemaining },
+                  { label: 'Syllabus coverage', value: `${aiStudySchedule?.coverageCount || 0} / ${aiStudySchedule?.totalTopics || aiScheduleInput.topicMetrics.length}` },
+                  { label: 'Topics needing focus', value: aiScheduleInput.topicMetrics.filter((metric) => metric.completion < 75 || metric.accuracy < 75).length },
+                  { label: 'Your average accuracy', value: `${plannerViewData?.summary?.averageAccuracy || 0}%` }
+                ].map((item) => (
+                  <div key={item.label} className="rounded-xl border border-slate-700 bg-slate-800/80 p-4">
+                    <p className="text-[11px] uppercase tracking-[0.15em] text-slate-400">{item.label}</p>
+                    <p className="mt-2 text-2xl font-black text-white">{item.value}</p>
+                  </div>
+                ))}
+              </div>
+
+              {aiScheduleError && (
+                <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-100">
+                  <span>{aiScheduleError}</span>
+                  <button type="button" onClick={() => setAiScheduleRefreshToken((token) => token + 1)} className="rounded-md border border-rose-300/40 px-3 py-1.5 text-xs font-bold hover:bg-rose-500/10">Retry AI schedule</button>
+                </div>
+              )}
+
+              {isAiScheduleLoading && (
+                <div role="status" className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-5 text-sm text-indigo-100">
+                  <Sparkles className="mr-2 inline h-4 w-4 animate-pulse" />
+                  Reviewing your progress and exam weightage to build a complete, personalized topic plan…
+                </div>
+              )}
+
+              {aiStudySchedule && (
+                <>
+                  {aiStudySchedule.strategy && (
+                    <section className="rounded-2xl border border-indigo-500/30 bg-indigo-500/10 p-5">
+                      <h3 className="flex items-center gap-2 font-bold text-indigo-100"><Sparkles className="h-4 w-4 text-amber-300" /> AI study strategy</h3>
+                      <p className="mt-2 text-sm leading-relaxed text-slate-200">{aiStudySchedule.strategy}</p>
+                    </section>
+                  )}
+
+                  {aiStudySchedule.compressed && (
+                    <div role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
+                      Your available time is shorter than the recommended depth for every topic. The AI has still scheduled every syllabus topic and shortened sessions to fit your daily limit. For fuller topic coverage, aim for about {Math.max(0.5, Math.round(aiStudySchedule.recommendedDailyMinutes / 30) / 2)} hours per day.
+                    </div>
+                  )}
+
+                  {!aiStudySchedule.daysRemaining && (
+                    <div role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">The configured exam date has passed, so there are no future study sessions to schedule.</div>
+                  )}
+
+                  <section className="rounded-2xl border border-slate-700 bg-slate-800/80 p-5">
+                    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <h3 className="text-lg font-bold text-white">Full syllabus schedule</h3>
+                        <p className="mt-1 text-xs text-slate-400">{aiStudySchedule.coverageCount} of {aiStudySchedule.totalTopics} topics assigned · sessions ordered by AI priority</p>
+                      </div>
+                      <button type="button" onClick={() => setShowFullAiSchedule((show) => !show)} className="rounded-lg border border-slate-600 px-3 py-2 text-xs font-bold text-slate-200 hover:bg-slate-700">
+                        {showFullAiSchedule ? 'Show next 7 days' : 'Show all scheduled days'}
+                      </button>
+                    </div>
+                    {aiStudySchedule.sessions.length ? (
+                      (() => {
+                        const todayTime = aiScheduleInput.today.getTime();
+                        const visibleSessions = showFullAiSchedule
+                          ? aiStudySchedule.sessions
+                          : aiStudySchedule.sessions.filter((session) => {
+                            const offset = Date.parse(`${session.date}T12:00:00`) - todayTime;
+                            return offset >= 0 && offset < 7 * 24 * 60 * 60 * 1000;
+                          });
+                        const groupedSessions = visibleSessions.reduce((groups, session) => {
+                          (groups[session.date] ||= []).push(session);
+                          return groups;
+                        }, {});
+                        return Object.entries(groupedSessions).sort(([left], [right]) => left.localeCompare(right)).map(([date, sessions]) => (
+                          <div key={date} className="mb-5 last:mb-0">
+                            <h4 className="mb-2 border-b border-slate-700 pb-2 text-sm font-bold text-teal-200">{new Date(`${date}T12:00:00`).toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })}</h4>
+                            <div className="space-y-2">
+                              {sessions.map((session) => (
+                                <article key={session.id} className="flex flex-wrap items-center gap-3 rounded-lg border border-slate-700/80 bg-slate-900/70 p-3">
+                                  <div className="min-w-0 flex-1">
+                                    <p className="font-semibold text-white">{session.topic}</p>
+                                    <p className="mt-0.5 text-xs text-slate-400">{session.subject} · Weightage {session.weightage} · {session.completion}% complete · {session.accuracy}% accuracy</p>
+                                  </div>
+                                  <span className="rounded-full border border-slate-600 px-2 py-1 text-[10px] font-bold text-slate-300">{session.duration} min</span>
+                                  <span className={`rounded-full border px-2 py-1 text-[10px] font-bold ${getPriorityColorClass(session.priority)}`}>{session.priority}</span>
+                                  <button
+                                    type="button"
+                                    onClick={() => { setSelectedSubject(session.subject); setSelectedTopic(session.topic); setCurrentView('topics'); }}
+                                    className="rounded-md bg-teal-600/20 px-3 py-1.5 text-xs font-bold text-teal-200 hover:bg-teal-600/40"
+                                  >
+                                    Practice
+                                  </button>
+                                </article>
+                              ))}
+                            </div>
+                          </div>
+                        ));
+                      })()
+                    ) : (
+                      <p className="rounded-lg border border-slate-700 bg-slate-900/70 p-4 text-sm text-slate-400">No upcoming sessions are available. Check the exam date and regenerate the schedule.</p>
+                    )}
+                  </section>
+                </>
+              )}
             </div>
           )}
 

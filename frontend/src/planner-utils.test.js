@@ -132,6 +132,32 @@ test('planner completion is isolated by candidate and exam role', () => {
     assert.equal(switchedRole.topicMetrics.find((metric) => metric.topic === 'Percentages').completion, 30);
 });
 
+test('planner metrics use saved progress accuracy and attempt count when test history is unavailable', () => {
+    const snapshot = buildPlannerSnapshot({
+        id: 'candidate-imported-progress',
+        exam: 'SI',
+        userProgress: {
+            [getProgressKey('SI', 'Arithmetic', 'Percentages')]: {
+                exam: 'SI',
+                subject: 'Arithmetic',
+                topic: 'Percentages',
+                attempts: 2,
+                bestScore: 9,
+                correctAnswers: 16,
+                totalQuestions: 20,
+                accuracy: 80
+            }
+        },
+        testHistory: []
+    }, 'SI', subjectTopics);
+    const metric = snapshot.topicMetrics.find((topic) => topic.topic === 'Percentages');
+
+    assert.equal(metric.attempted, 2);
+    assert.equal(metric.accuracy, 80);
+    assert.equal(metric.recentAccuracy, 80);
+    assert.ok(metric.completion > 0);
+});
+
 test('progress from another exam alone does not activate the selected-role planner', () => {
     const snapshot = buildPlannerSnapshot({
         id: 'candidate-role-empty',

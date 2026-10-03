@@ -506,7 +506,7 @@ test('planner writes reject stale revisions instead of overwriting newer server 
     const { server, baseUrl } = await createServer();
     context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
     const user = await signUp(baseUrl, 'Planner Candidate', 'planner@example.test');
-    const plannerData = { examType: 'SI', generatedAt: null, summary: {}, topicMetrics: [], schedule: [] };
+    const plannerData = { examType: 'SI', generatedAt: null, summary: {}, topicMetrics: [], schedule: [], aiScheduleDailyMinutes: 240 };
     const firstWrite = await fetch(`${baseUrl}/api/me/planner`, {
         method: 'PUT', headers: authHeaders(user.cookie), body: JSON.stringify({ plannerData, expectedRevision: 0 })
     });
@@ -520,4 +520,5 @@ test('planner writes reject stale revisions instead of overwriting newer server 
     assert.equal((await staleWrite.json()).code, 'DATA_CONFLICT');
     const saved = await (await fetch(`${baseUrl}/api/me/data`, { headers: { Cookie: user.cookie } })).json();
     assert.equal(saved.data.plannerRevision, 1);
+    assert.equal(saved.data.plannerData.aiScheduleDailyMinutes, 240);
 });

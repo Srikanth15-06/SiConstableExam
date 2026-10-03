@@ -116,7 +116,10 @@ function sanitizePlanner(value, userId) {
         generatedAt: typeof value.generatedAt === 'string' ? value.generatedAt.slice(0, 40) : null,
         summary: value.summary && typeof value.summary === 'object' && !Array.isArray(value.summary) ? value.summary : {},
         topicMetrics: Array.isArray(value.topicMetrics) ? value.topicMetrics.slice(0, 1000) : [],
-        schedule
+        schedule,
+        aiScheduleDailyMinutes: Number.isInteger(value.aiScheduleDailyMinutes)
+            ? Math.max(30, Math.min(720, value.aiScheduleDailyMinutes))
+            : 180
     };
 }
 
