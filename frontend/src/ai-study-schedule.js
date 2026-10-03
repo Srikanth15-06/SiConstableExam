@@ -115,27 +115,42 @@ export function buildAiStudySchedule(topicMetrics, priorityTopicIds, {
       daysRemaining: days,
       dailyMinutes: normalizedDailyMinutes,
       recommendedDailyMinutes: 0,
+      minimumDaysRequired: Math.ceil((metrics.length * 10) / normalizedDailyMinutes),
+      cannotCoverAll: metrics.length > 0,
       compressed: false
     };
   }
 
   const availableMinutes = days * normalizedDailyMinutes;
-  const requested = orderedIds.map((id) => {
+  const minimumSessionMinutes = 10;
+  const recommendedTotal = orderedIds.reduce((sum, id) => {
+    const metric = metrics[id];
+    const recommended = Number(metric.recommendedMinutes)
+      || (25 + (Number(metric.weightage) || 1) * 5 + Math.max(0, 65 - (Number(metric.accuracy) || 0)) * 0.25);
+    return sum + clamp(Math.round(recommended), minimumSessionMinutes, 90);
+  }, 0);
+  const maxSchedulableTopics = Math.min(metrics.length, Math.floor(availableMinutes / minimumSessionMinutes));
+  const requested = orderedIds.slice(0, maxSchedulableTopics).map((id) => {
     const metric = metrics[id];
     const recommended = Number(metric.recommendedMinutes)
       || (25 + (Number(metric.weightage) || 1) * 5 + Math.max(0, 65 - (Number(metric.accuracy) || 0)) * 0.25);
     return {
       id,
       metric,
-      minutes: clamp(Math.round(recommended), 10, Math.min(90, normalizedDailyMinutes))
+      minutes: clamp(Math.round(recommended), minimumSessionMinutes, Math.min(90, normalizedDailyMinutes))
     };
   });
   const requestedTotal = requested.reduce((sum, task) => sum + task.minutes, 0);
-  const compressed = requestedTotal > availableMinutes;
-  const minimumMinutes = Math.max(1, Math.min(10, Math.floor(availableMinutes / requested.length)));
+  const compressed = requested.length < metrics.length || requestedTotal > availableMinutes;
+  const minimumMinutes = requested.length ? minimumSessionMinutes : 0;
   let plannedTotal = 0;
+  const topicsPerDay = requested.length ? Math.ceil(requested.length / days) : 0;
+  const maxSessionMinutes = topicsPerDay
+    ? Math.max(minimumSessionMinutes, Math.floor(normalizedDailyMinutes / topicsPerDay))
+    : normalizedDailyMinutes;
   requested.forEach((task) => {
     if (compressed) task.minutes = Math.max(minimumMinutes, Math.floor(task.minutes * availableMinutes / requestedTotal));
+    task.minutes = Math.min(task.minutes, maxSessionMinutes);
     plannedTotal += task.minutes;
   });
   for (let index = requested.length - 1; plannedTotal > availableMinutes && index >= 0; index -= 1) {
@@ -174,7 +189,9 @@ export function buildAiStudySchedule(topicMetrics, priorityTopicIds, {
     coverageCount: sessions.length,
     daysRemaining: days,
     dailyMinutes: normalizedDailyMinutes,
-    recommendedDailyMinutes: Math.ceil(requestedTotal / days),
+    recommendedDailyMinutes: Math.ceil(recommendedTotal / days),
+    minimumDaysRequired: Math.ceil((metrics.length * minimumSessionMinutes) / normalizedDailyMinutes),
+    cannotCoverAll: requested.length < metrics.length,
     compressed,
     plannedMinutes: plannedTotal
   };

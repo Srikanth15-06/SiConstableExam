@@ -2181,7 +2181,13 @@ export default function App() {
                     </section>
                   )}
 
-                  {aiStudySchedule.compressed && (
+                  {aiStudySchedule.cannotCoverAll && (
+                    <div role="alert" className="rounded-xl border border-rose-500/30 bg-rose-500/10 p-4 text-sm text-rose-100">
+                      There is not enough time before the exam to schedule every topic for even a 10-minute session. This plan covers {aiStudySchedule.coverageCount} of {aiStudySchedule.totalTopics} topics; at {aiScheduleDailyMinutes} minutes per day, full minimum coverage needs at least {aiStudySchedule.minimumDaysRequired} days. Increase daily study time or prioritize the topics currently scheduled.
+                    </div>
+                  )}
+
+                  {aiStudySchedule.compressed && !aiStudySchedule.cannotCoverAll && (
                     <div role="status" className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-100">
                       Your available time is shorter than the recommended depth for every topic. The AI has still scheduled every syllabus topic and shortened sessions to fit your daily limit. For fuller topic coverage, aim for about {Math.max(0.5, Math.round(aiStudySchedule.recommendedDailyMinutes / 30) / 2)} hours per day.
                     </div>

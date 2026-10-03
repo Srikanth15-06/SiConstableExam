@@ -78,4 +78,24 @@ test('full syllabus schedule assigns all 129 configured topics', () => {
   assert.equal(expectedTopicCount, 129);
   assert.equal(schedule.coverageCount, expectedTopicCount);
   assert.equal(new Set(schedule.sessions.map(({ subject, topic }) => `${subject}|${topic}`)).size, expectedTopicCount);
+  const dailyLoads = schedule.sessions.reduce((loads, session) => {
+    loads[session.date] = (loads[session.date] || 0) + session.duration;
+    return loads;
+  }, {});
+  assert.ok(Object.values(dailyLoads).every((minutes) => minutes <= 180));
+});
+
+test('schedule preserves daily time limit and reports when the exam window cannot fit every topic', () => {
+  const topicMetrics = buildPlannerSnapshot({ exam: 'SI', testHistory: [], userProgress: {} }, 'SI', SUBJECT_TOPICS).topicMetrics;
+  const schedule = buildAiStudySchedule(topicMetrics, [], {
+    dailyMinutes: 30,
+    daysRemaining: 1,
+    today: new Date(2026, 9, 3)
+  });
+
+  assert.equal(schedule.coverageCount, 3);
+  assert.equal(schedule.cannotCoverAll, true);
+  assert.equal(schedule.minimumDaysRequired, 43);
+  assert.equal(schedule.plannedMinutes, 30);
+  assert.ok(schedule.sessions.every((session) => session.duration === 10));
 });
