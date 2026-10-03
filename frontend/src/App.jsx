@@ -7,7 +7,7 @@ import {
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell
 } from 'recharts';
-import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, getDriveAuthUrl, loginDriveAdmin, logoutDriveAdmin, checkDriveConnection, uploadDriveFile, getDriveFileContentUrl, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, createTestAttempt, createRevisionMockAttempt, submitTestAttempt, saveTestAnswers, getTopicLearningVideos, getAdminLearningVideos, createAdminLearningVideo, updateAdminLearningVideo, deleteAdminLearningVideo } from './services/aiService.js';
+import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, getDriveAuthUrl, loginDriveAdmin, logoutDriveAdmin, checkDriveConnection, uploadDriveFile, getDriveFileContentUrl, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, saveCurrentCandidateBookmarks, createTestAttempt, createBookmarkedTestAttempt, createRevisionMockAttempt, submitTestAttempt, saveTestAnswers, getTopicLearningVideos, getAdminLearningVideos, createAdminLearningVideo, updateAdminLearningVideo, deleteAdminLearningVideo } from './services/aiService.js';
 import { normalizeAnswer } from './test-results.js';
 import { LEGACY_MEMBERS_STORAGE_KEY, readLegacyMembers, removeImportedLegacyMember } from './legacy-import.js';
 import { SUBJECT_TOPICS } from './syllabus.js';
@@ -24,6 +24,7 @@ import {
   daysRemainingForExam
 } from './planner-utils.js';
 import { buildAiSchedulePrompt, buildAiStudySchedule, parseAiScheduleResponse } from './ai-study-schedule.js';
+import { createProgressCsv, getMistakeNotebook, getMockTestInsights, getSpacedRevisionRecommendations } from './profile-tools.js';
 
 const getTopicWeightage = (exam, subject, topic) => {
   const weightage = resolveTopicWeightage(exam, subject, topic, {});
@@ -277,11 +278,37 @@ export default function App() {
   const [activeTestDurationSeconds, setActiveTestDurationSeconds] = useState(600);
   const [revisionMockQuestionCount, setRevisionMockQuestionCount] = useState(60);
   const [revisionMockDurationMinutes, setRevisionMockDurationMinutes] = useState(60);
+  const [revisionMockMode, setRevisionMockMode] = useState('revision-mock');
+  const [savedQuestions, setSavedQuestions] = useState([]);
+  const [selectedBookmarkIds, setSelectedBookmarkIds] = useState([]);
+  const [bookmarkPracticeDuration, setBookmarkPracticeDuration] = useState(30);
+  const [isSavingBookmarks, setIsSavingBookmarks] = useState(false);
+  const [textScale, setTextScale] = useState(() => {
+    try { return localStorage.getItem('prep-text-scale') || '16px'; } catch { return '16px'; }
+  });
+  const [highContrast, setHighContrast] = useState(() => {
+    try { return localStorage.getItem('prep-high-contrast') === 'true'; } catch { return false; }
+  });
 
   useEffect(() => {
     const interval = setInterval(() => setCountdownNow(Date.now()), 60_000);
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    document.documentElement.style.fontSize = ['16px', '18px', '20px'].includes(textScale) ? textScale : '16px';
+    document.documentElement.dataset.highContrast = String(highContrast);
+    try {
+      localStorage.setItem('prep-text-scale', textScale);
+      localStorage.setItem('prep-high-contrast', String(highContrast));
+    } catch (error) {
+      console.warn('Accessibility preferences could not be saved in this browser.', error);
+    }
+    return () => {
+      delete document.documentElement.dataset.highContrast;
+      document.documentElement.style.fontSize = '';
+    };
+  }, [textScale, highContrast]);
 
   useEffect(() => {
     const members = readLegacyMembers();
@@ -563,6 +590,8 @@ export default function App() {
     setSelectedExam('SI');
     setUserProgress({});
     setTestHistory([]);
+    setSavedQuestions([]);
+    setSelectedBookmarkIds([]);
     setTestAttemptCounter(0);
     setActiveAttemptId(null);
     setCompletedAttempt(null);
@@ -715,6 +744,7 @@ export default function App() {
     const loadedHistory = (data.testHistory || []).map((attempt) => ({ ...attempt, id: attempt.id || attempt.attemptId }));
     setUserProgress(normalizeUserProgress(data.userProgress || {}, member.exam, loadedHistory, SUBJECT_TOPICS));
     setTestHistory(loadedHistory);
+    setSavedQuestions(Array.isArray(data.savedQuestions) ? data.savedQuestions : []);
     setTestAttemptCounter(Number(data.testAttemptCounter) || 0);
     const activeAttempt = data.activeAttempt?.status === 'in_progress' ? data.activeAttempt : null;
     setActiveAttemptId(activeAttempt?.attemptId || null);
@@ -903,7 +933,7 @@ export default function App() {
     }
   };
 
-  const handleStartRevisionMockTest = async () => {
+  const handleStartRevisionMockTest = async (mode = revisionMockMode) => {
     if (isGeneratingQuestions) return;
     if (!selectedExamProgress.length) {
       setQuestionGenerationError('Practice at least one syllabus topic before starting a revision mock test.');
@@ -916,7 +946,9 @@ export default function App() {
     setShowExamFocusWarning(false);
     setIsGeneratingQuestions(true);
     setQuestionGenerationError('');
-    setQuestionGenerationNotice('Preparing a weighted revision test from your practiced topics...');
+    setQuestionGenerationNotice(mode === 'exam-day'
+      ? 'Preparing an exam-day practice simulation from your practiced topics...'
+      : 'Preparing a weighted revision test from your practiced topics...');
     setCompletedAttempt(null);
     submissionInProgressRef.current = false;
     setIsSubmittingTest(false);
@@ -925,9 +957,10 @@ export default function App() {
       const { attempt } = await createRevisionMockAttempt({
         exam: normalizeExamForRequest(selectedExam),
         questionCount: revisionMockQuestionCount,
-        durationMinutes: revisionMockDurationMinutes
+        durationMinutes: revisionMockDurationMinutes,
+        mode
       });
-      if (!attempt?.attemptId || attempt.mode !== 'revision-mock'
+      if (!attempt?.attemptId || attempt.mode !== mode
         || !Array.isArray(attempt.questions) || attempt.questions.length !== revisionMockQuestionCount) {
         throw new Error('The server returned an invalid revision test. Please try again.');
       }
@@ -935,16 +968,16 @@ export default function App() {
       setTestAttemptCounter((previous) => previous + Math.ceil(revisionMockQuestionCount / 10));
       setActiveAttemptId(attempt.attemptId);
       setActiveTestQuestions(attempt.questions);
-      setActiveTestMode('revision-mock');
+      setActiveTestMode(mode);
       setActiveTestDurationSeconds(revisionMockDurationMinutes * 60);
       setUserAnswers({});
       setCurrentQuestionIdx(0);
       setTimeRemaining(revisionMockDurationMinutes * 60);
-      setQuestionGenerationNotice('Revision mock test ready.');
+      setQuestionGenerationNotice(mode === 'exam-day' ? 'Exam-day simulation ready.' : 'Revision mock test ready.');
       setCurrentView('test');
     } catch (error) {
-      setQuestionGenerationError(getSafeAiMessage(error, 'Revision mock generation failed. Please try again.'));
-      setQuestionGenerationNotice('Revision mock generation failed.');
+      setQuestionGenerationError(getSafeAiMessage(error, 'Practice test generation failed. Please try again.'));
+      setQuestionGenerationNotice('Practice test generation failed.');
     } finally {
       setIsGeneratingQuestions(false);
     }
@@ -1395,9 +1428,11 @@ export default function App() {
     let didSubmit = false;
 
     try {
-      const hasValidQuestionCount = activeTestMode === 'revision-mock'
+      const hasValidQuestionCount = ['revision-mock', 'exam-day'].includes(activeTestMode)
         ? [10, 20, 30, 40, 50, 60, 90, 120].includes(activeTestQuestions.length)
-        : activeTestQuestions.length === 10;
+        : activeTestMode === 'bookmark-practice'
+          ? activeTestQuestions.length >= 1 && activeTestQuestions.length <= 100
+          : activeTestQuestions.length === 10;
       if (!hasValidQuestionCount) {
         setQuestionGenerationError('This test question set is incomplete and cannot be scored. Please generate a new test.');
         setCurrentView('topic-detail');
@@ -1422,6 +1457,7 @@ export default function App() {
         const loadedHistory = (data.testHistory || []).map((attempt) => ({ ...attempt, id: attempt.id || attempt.attemptId }));
         setUserProgress(normalizeUserProgress(data.userProgress || {}, data.exam || selectedExam, loadedHistory, SUBJECT_TOPICS));
         setTestHistory(loadedHistory);
+        setSavedQuestions(Array.isArray(data.savedQuestions) ? data.savedQuestions : []);
         plannerRevisionRef.current = Number(data.plannerRevision) || 0;
         setPlannerData(data.plannerData || createEmptyPlannerState(currentMember));
       } catch (error) {
@@ -1548,8 +1584,8 @@ export default function App() {
     setCompletedAttempt(attempt);
     setActiveAttemptId(attempt.id);
     void handleChangeExam(attempt.exam || 'SI');
-    setSelectedSubject(attempt.subject);
-    setSelectedTopic(attempt.topic);
+    setSelectedSubject(attempt.questions?.[0]?.subject || attempt.subject);
+    setSelectedTopic(attempt.questions?.[0]?.topic || attempt.topic);
     setActiveTestDifficulty(attempt.difficulty || 'Beginner');
     setCurrentView('result');
   };
@@ -1659,6 +1695,146 @@ export default function App() {
   const selectedExamHistory = getExamHistory(testHistory, selectedExam);
   const selectedExamProgress = Object.values(userProgress).filter((progress) => progress?.exam === selectedExam && Number(progress.attempts || 0) > 0);
   const selectedExamQuestionCount = selectedExamHistory.reduce((total, attempt) => total + Number(attempt.total || 0), 0);
+  const bestExamAttempt = selectedExamHistory.reduce((best, attempt) => {
+    const attemptTotal = Number(attempt.total) || 10;
+    const bestTotal = Number(best?.total) || 10;
+    return !best || (Number(attempt.score) || 0) / attemptTotal > (Number(best.score) || 0) / bestTotal ? attempt : best;
+  }, null);
+  const mistakeNotebook = useMemo(() => getMistakeNotebook(selectedExamHistory, selectedExam), [selectedExamHistory, selectedExam]);
+  const spacedRevisionRecommendations = useMemo(
+    () => getSpacedRevisionRecommendations(userProgress, selectedExamHistory, selectedExam, SUBJECT_TOPICS, new Date(countdownNow)),
+    [userProgress, selectedExamHistory, selectedExam, countdownNow]
+  );
+  const mockTestInsights = useMemo(() => getMockTestInsights(selectedExamHistory, selectedExam), [selectedExamHistory, selectedExam]);
+  const selectedExamBookmarks = savedQuestions.filter((question) => question.exam === selectedExam);
+
+  const handleToggleBookmark = async (question, attempt = activeAttemptData) => {
+    const id = String(question?.questionId || question?.id || '');
+    if (!id || isSavingBookmarks) return;
+    const isSaved = savedQuestions.some((item) => item.id === id);
+    let nextBookmarks;
+    if (isSaved) {
+      nextBookmarks = savedQuestions.filter((item) => item.id !== id);
+      setSelectedBookmarkIds((previous) => previous.filter((selectedId) => selectedId !== id));
+    } else {
+      const bookmark = {
+        id,
+        exam: attempt?.exam || selectedExam,
+        subject: question.subject || attempt?.subject || selectedSubject,
+        topic: question.topic || attempt?.topic || selectedTopic,
+        difficulty: question.difficulty || attempt?.difficulty || activeTestDifficulty,
+        question: question.question,
+        options: question.options,
+        correctAnswer: question.correctAnswer,
+        explanation: question.explanation,
+        shortcut: question.shortcut,
+        questionType: question.questionType
+      };
+      nextBookmarks = [...savedQuestions, bookmark];
+    }
+    setIsSavingBookmarks(true);
+    try {
+      const response = await saveCurrentCandidateBookmarks(nextBookmarks);
+      setSavedQuestions(response.savedQuestions);
+      setAccountDataError('');
+    } catch (error) {
+      setAccountDataError(error.message || 'The saved-question list could not be updated. Please retry.');
+    } finally {
+      setIsSavingBookmarks(false);
+    }
+  };
+
+  const handleStartBookmarkedPractice = async () => {
+    if (!selectedBookmarkIds.length || isGeneratingQuestions) return;
+    initializeExamAudio(examAudioContextRef);
+    halfTimeAlertPlayedRef.current = false;
+    finalMinuteAlertsPlayedRef.current.clear();
+    setShowExamFocusWarning(false);
+    setIsGeneratingQuestions(true);
+    setQuestionGenerationError('');
+    setQuestionGenerationNotice('Loading your saved practice questions...');
+    setCompletedAttempt(null);
+    submissionInProgressRef.current = false;
+    setIsSubmittingTest(false);
+    try {
+      const { attempt } = await createBookmarkedTestAttempt({
+        questionIds: selectedBookmarkIds,
+        durationMinutes: bookmarkPracticeDuration
+      });
+      if (!attempt?.attemptId || attempt.mode !== 'bookmark-practice'
+        || !Array.isArray(attempt.questions) || attempt.questions.length !== selectedBookmarkIds.length) {
+        throw new Error('The server returned an invalid saved-question set.');
+      }
+      setActiveAttemptId(attempt.attemptId);
+      setActiveTestQuestions(attempt.questions);
+      setActiveTestMode('bookmark-practice');
+      setActiveTestDurationSeconds(bookmarkPracticeDuration * 60);
+      setUserAnswers({});
+      setCurrentQuestionIdx(0);
+      setTimeRemaining(bookmarkPracticeDuration * 60);
+      setSelectedBookmarkIds([]);
+      setActiveTestDifficulty('Mixed');
+      setCurrentView('test');
+    } catch (error) {
+      setAccountDataError(error.message || 'Could not start saved-question practice. Please try again.');
+    } finally {
+      setIsGeneratingQuestions(false);
+    }
+  };
+
+  const handlePracticeTopic = (subject, topic) => {
+    setSelectedSubject(subject);
+    setSelectedTopic(topic);
+    setQuestionGenerationError('');
+    setCurrentView('topics');
+  };
+
+  const handleExplainInTelugu = (question) => {
+    const userAnswer = question.userAnswer || 'Not answered';
+    setAiModalContent('Preparing a Telugu explanation...');
+    void sendChatMessage({
+      exam: normalizeExamForRequest(activeAttemptData?.exam || selectedExam),
+      subject: question.subject || activeAttemptData?.subject || selectedSubject,
+      topic: question.topic || activeAttemptData?.topic || selectedTopic,
+      difficulty: activeAttemptData?.difficulty || activeTestDifficulty,
+      messages: [{
+        role: 'user',
+        content: `Explain this exam question and answer in clear Telugu. Keep formulas and answer choices unchanged where helpful. Question: ${question.question}. Candidate answer: ${userAnswer}. Correct answer: ${question.correctAnswer}. Explanation: ${question.explanation || ''}.`
+      }]
+    }).then(setAiModalContent).catch((error) => {
+      setAiModalContent(getSafeAiMessage(error, 'The Telugu explanation is unavailable right now.'));
+    });
+  };
+
+  const downloadProgressReport = (format) => {
+    const contents = format === 'csv'
+      ? createProgressCsv({
+        profile: currentMember,
+        exam: selectedExam,
+        history: testHistory,
+        progress: userProgress,
+        recommendations: spacedRevisionRecommendations
+      })
+      : JSON.stringify({
+        generatedAt: new Date().toISOString(),
+        profile: { name: currentMember.name, email: currentMember.email },
+        exam: selectedExam,
+        userProgress: Object.values(userProgress).filter((item) => item?.exam === selectedExam),
+        testHistory: selectedExamHistory,
+        plannerTasks: selectedPlannerTasks,
+        spacedRevisionRecommendations
+      }, null, 2);
+    const mimeType = format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8';
+    const extension = format === 'csv' ? 'csv' : 'json';
+    const fileUrl = URL.createObjectURL(new Blob([contents], { type: mimeType }));
+    const link = document.createElement('a');
+    link.href = fileUrl;
+    link.download = `ts-police-${selectedExam.toLowerCase()}-progress.${extension}`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    window.setTimeout(() => URL.revokeObjectURL(fileUrl), 1000);
+  };
   const activeAttemptData = completedAttempt || selectedExamHistory.find((item) => item.id === activeAttemptId) || selectedExamHistory[0] || null;
   const activeQuestionIds = new Set(activeTestQuestions.map((question) => question.id).filter(Boolean));
   const activeAnswerCount = Object.entries(userAnswers).filter(([questionId, answer]) => activeQuestionIds.has(questionId) && Boolean(answer)).length;
@@ -1810,7 +1986,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen w-full min-w-0 max-w-full bg-slate-900 text-slate-100 flex flex-col font-sans">
+    <div data-high-contrast={highContrast} className="min-h-screen w-full min-w-0 max-w-full bg-slate-900 text-slate-100 flex flex-col font-sans">
       {legacyArchive && <div className="mx-auto mt-3 w-full max-w-5xl border-y border-amber-500/30 bg-amber-950/20 px-4 py-3 text-xs text-amber-100">
         <p>Older account data is archived separately and marked unverified. It is not included in current practice statistics. Archived history: {legacyArchive.testHistory?.length || 0} tests; progress topics: {Object.keys(legacyArchive.userProgress || {}).length}.</p>
         {legacyArchive.plannerData && (legacyArchive.plannerData.schedule?.length > 0 || legacyArchive.plannerData.topicMetrics?.length > 0) && (
@@ -2063,6 +2239,26 @@ export default function App() {
                   </div>
                 </div>
               </div>
+
+              {spacedRevisionRecommendations.length > 0 && (
+                <section aria-label="Topics due for spaced revision" className="rounded-2xl border border-amber-500/20 bg-gradient-to-r from-amber-950/30 to-slate-800/80 p-5">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Spaced revision</p>
+                      <h3 className="mt-1 text-lg font-bold text-white">Topics to revisit</h3>
+                    </div>
+                    <button type="button" onClick={() => setCurrentView('profile')} className="rounded-lg border border-amber-400/30 px-3 py-2 text-xs font-bold text-amber-100 hover:bg-amber-500/10">View revision plan</button>
+                  </div>
+                  <div className="mt-4 grid grid-cols-1 gap-2 md:grid-cols-3">
+                    {spacedRevisionRecommendations.slice(0, 3).map((item) => (
+                      <button key={`${item.subject}:${item.topic}`} type="button" onClick={() => handlePracticeTopic(item.subject, item.topic)} className="rounded-xl border border-slate-700 bg-slate-900/70 p-3 text-left hover:border-amber-400/40">
+                        <span className="block text-xs font-bold text-slate-100">{item.subject} · {item.topic}</span>
+                        <span className="mt-1 block text-[11px] text-amber-200">{item.daysUntilDue <= 0 ? 'Due now' : `Due in ${item.daysUntilDue} days`} · {item.accuracy}% recent accuracy</span>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              )}
 
               <section aria-label="Upcoming exam countdown" className="space-y-3">
                 <div className="flex items-center justify-between gap-3">
@@ -2554,9 +2750,20 @@ export default function App() {
               </div>
 
               <div className="rounded-2xl border border-slate-700 bg-slate-800/80 p-5 shadow-lg">
-                <p className="text-sm leading-6 text-slate-300">
-                  Build a timed mixed-subject test from topics you have already practiced for <strong className="text-white">{selectedExam}</strong>.
-                  Each 10-question block focuses on a practiced topic. Blocks are prioritized by syllabus weightage and your lower-accuracy topics; results update progress separately for every topic tested.
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <button type="button" aria-pressed={revisionMockMode === 'revision-mock'} onClick={() => { setRevisionMockMode('revision-mock'); setRevisionMockQuestionCount(60); setRevisionMockDurationMinutes(60); }} className={`rounded-xl border p-4 text-left transition ${revisionMockMode === 'revision-mock' ? 'border-teal-400/50 bg-teal-500/10' : 'border-slate-700 bg-slate-900/50 hover:border-slate-500'}`}>
+                    <span className="block text-sm font-bold text-white">Topic revision mock</span>
+                    <span className="mt-1 block text-xs leading-5 text-slate-400">Weighted blocks from practiced topics. Lower-accuracy topics are prioritized.</span>
+                  </button>
+                  <button type="button" aria-pressed={revisionMockMode === 'exam-day'} onClick={() => { setRevisionMockMode('exam-day'); setRevisionMockQuestionCount(120); setRevisionMockDurationMinutes(120); }} className={`rounded-xl border p-4 text-left transition ${revisionMockMode === 'exam-day' ? 'border-indigo-400/50 bg-indigo-500/10' : 'border-slate-700 bg-slate-900/50 hover:border-slate-500'}`}>
+                    <span className="block text-sm font-bold text-white">Exam-day simulation</span>
+                    <span className="mt-1 block text-xs leading-5 text-slate-400">A timed 120-question practice run through app subjects in sequence.</span>
+                  </button>
+                </div>
+                <p className="mt-4 text-sm leading-6 text-slate-300">
+                  {revisionMockMode === 'exam-day'
+                    ? <>This is an <strong className="text-white">approximate practice simulation</strong> for <strong className="text-white">{selectedExam}</strong>, not an official paper blueprint. It uses your practiced topics and the app&apos;s subject order; unavailable subjects fall back to other practiced topics.</>
+                    : <>Build a timed mixed-subject test from topics you have already practiced for <strong className="text-white">{selectedExam}</strong>. Each 10-question block focuses on one practiced topic; results update progress separately for every topic tested.</>}
                 </p>
                 <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
                   <label className="text-xs font-semibold text-slate-300">
@@ -2579,7 +2786,7 @@ export default function App() {
                   </div>
                   {selectedExamProgress.length ? (
                     <p className="mt-2 text-xs leading-5 text-slate-400">
-                      This mock has up to {Math.ceil(revisionMockQuestionCount / 10)} topic sections drawn from your practiced pool. If your pool is larger, later mocks rotate to other topics; if it is smaller, the test revisits topics. Topic selection prioritizes exam weightage and revision needs.
+                      This test has up to {Math.ceil(revisionMockQuestionCount / 10)} topic sections drawn from your practiced pool. If your pool is larger, later tests rotate to other topics; if it is smaller, topics repeat. {revisionMockMode === 'exam-day' ? 'Sections follow the app subject order where possible.' : 'Topic selection prioritizes exam weightage and revision needs.'}
                     </p>
                   ) : (
                     <p className="mt-2 text-xs text-amber-200">Complete at least one topic test first; the mock test only includes topics you have practiced.</p>
@@ -2588,7 +2795,7 @@ export default function App() {
                 {questionGenerationError && <p role="alert" className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{questionGenerationError}</p>}
                 {questionGenerationNotice && <p role="status" className="mt-4 rounded-lg border border-teal-500/20 bg-teal-500/5 px-3 py-2 text-xs text-teal-200">{questionGenerationNotice}</p>}
                 <button type="button" onClick={() => void handleStartRevisionMockTest()} disabled={!selectedExamProgress.length || isGeneratingQuestions} className="mt-5 w-full rounded-xl bg-teal-600 px-4 py-3 text-sm font-bold text-white shadow transition hover:bg-teal-500 disabled:cursor-not-allowed disabled:opacity-50">
-                  {isGeneratingQuestions ? 'Generating your mixed-topic questions…' : `Start ${revisionMockQuestionCount}-Question Mock Test`}
+                  {isGeneratingQuestions ? 'Generating your practice questions…' : `Start ${revisionMockQuestionCount}-Question ${revisionMockMode === 'exam-day' ? 'Exam-day Simulation' : 'Revision Mock'}`}
                 </button>
               </div>
             </div>
@@ -3088,10 +3295,10 @@ export default function App() {
               <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 flex flex-col sm:flex-row justify-between items-center gap-3 shadow-lg">
                 <div>
                   <div className="flex items-center space-x-2 text-xs text-slate-400">
-                    <span>{selectedExam}</span> • <span>{activeTestMode === 'revision-mock' ? 'All subjects' : selectedSubject}</span> • <span className="text-blue-400 font-semibold">{activeTestMode === 'revision-mock' ? `${activeTestDurationSeconds / 60} min mock` : `${activeTestDifficulty} Level`}</span>
+                    <span>{selectedExam}</span> • <span>{['revision-mock', 'exam-day'].includes(activeTestMode) ? 'Practiced topics' : activeTestMode === 'bookmark-practice' ? 'Saved questions' : selectedSubject}</span> • <span className="text-blue-400 font-semibold">{['revision-mock', 'exam-day', 'bookmark-practice'].includes(activeTestMode) ? `${activeTestDurationSeconds / 60} min ${activeTestMode === 'exam-day' ? 'simulation' : 'practice'}` : `${activeTestDifficulty} Level`}</span>
                   </div>
                   <h3 className="text-lg font-bold text-white flex items-center space-x-2">
-                    <span>{activeTestMode === 'revision-mock' ? 'Revision Mock Test' : selectedTopic}</span>
+                    <span>{activeTestMode === 'revision-mock' ? 'Revision Mock Test' : activeTestMode === 'exam-day' ? 'Exam-day Practice Simulation' : activeTestMode === 'bookmark-practice' ? 'Saved-question Practice' : selectedTopic}</span>
                     <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-md font-bold">
                       ✨ Attempt Seed #{testAttemptCounter}
                     </span>
@@ -3220,8 +3427,8 @@ export default function App() {
               <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl space-y-6">
                 <div className="flex justify-between items-center border-b border-slate-700 pb-4">
                   <div>
-                    <span className="text-xs text-blue-400 font-semibold">{activeAttemptData.mode === 'revision-mock' ? `${activeAttemptData.total} questions · All subjects` : `${activeAttemptData.topic} • ${activeAttemptData.difficulty}`}</span>
-                    <h2 className="text-2xl font-extrabold text-white">{activeAttemptData.mode === 'revision-mock' ? 'Revision Mock Results' : 'Test Results'}</h2>
+                    <span className="text-xs text-blue-400 font-semibold">{['revision-mock', 'exam-day'].includes(activeAttemptData.mode) ? `${activeAttemptData.total} questions · Practiced topics` : activeAttemptData.mode === 'bookmark-practice' ? `${activeAttemptData.total} saved questions` : `${activeAttemptData.topic} • ${activeAttemptData.difficulty}`}</span>
+                    <h2 className="text-2xl font-extrabold text-white">{activeAttemptData.mode === 'exam-day' ? 'Exam-day Simulation Results' : activeAttemptData.mode === 'revision-mock' ? 'Revision Mock Results' : activeAttemptData.mode === 'bookmark-practice' ? 'Saved-question Practice Results' : 'Test Results'}</h2>
                   </div>
                   <span className={`px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-wider ${activeAttemptData.status === 'LEVEL PASSED' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
                     }`}>
@@ -3286,15 +3493,17 @@ export default function App() {
                 </div>
 
                 <div className="flex flex-col sm:flex-row gap-3">
-                  {activeAttemptData.mode === 'revision-mock' ? (
+                  {['revision-mock', 'exam-day'].includes(activeAttemptData.mode) ? (
                     <button
                       disabled={isGeneratingQuestions}
-                      onClick={() => { setQuestionGenerationError(''); void handleStartRevisionMockTest(); }}
+                      onClick={() => { setQuestionGenerationError(''); void handleStartRevisionMockTest(activeAttemptData.mode); }}
                       aria-busy={isGeneratingQuestions}
                       className="flex-1 py-3 bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs rounded-xl shadow transition disabled:cursor-wait disabled:opacity-60"
                     >
-                      {isGeneratingQuestions ? 'Preparing New Mock...' : 'Take Another Revision Mock'}
+                      {isGeneratingQuestions ? 'Preparing New Practice...' : activeAttemptData.mode === 'exam-day' ? 'Take Another Simulation' : 'Take Another Revision Mock'}
                     </button>
+                  ) : activeAttemptData.mode === 'bookmark-practice' ? (
+                    <button type="button" onClick={() => setCurrentView('profile')} className="flex-1 rounded-xl bg-teal-600 py-3 text-xs font-bold text-white hover:bg-teal-500">Manage Saved Questions</button>
                   ) : (
                     <button
                     disabled={isGeneratingQuestions}
@@ -3363,6 +3572,26 @@ export default function App() {
                         <Sparkles className="w-3.5 h-3.5" />
                         <span>AI Deep Explanation</span>
                       </button>
+
+                      <div className="flex flex-wrap gap-3">
+                        <button
+                          type="button"
+                          disabled={isSavingBookmarks}
+                          aria-pressed={savedQuestions.some((item) => item.id === String(questionId))}
+                          onClick={() => void handleToggleBookmark({ ...q, id: questionId }, activeAttemptData)}
+                          className="text-xs font-semibold text-amber-300 hover:text-amber-200 disabled:opacity-50"
+                        >
+                          {savedQuestions.some((item) => item.id === String(questionId)) ? 'Remove from saved questions' : 'Save question'}
+                        </button>
+                        <button type="button" onClick={() => handleExplainInTelugu({ ...q, userAnswer: userAns })} className="text-xs font-semibold text-teal-300 hover:text-teal-200">
+                          Explain in Telugu
+                        </button>
+                        {(q.topic || activeAttemptData.topic) && (
+                          <button type="button" onClick={() => handlePracticeTopic(q.subject || activeAttemptData.subject || selectedSubject, q.topic || activeAttemptData.topic)} className="text-xs font-semibold text-blue-300 hover:text-blue-200">
+                            Practice this topic
+                          </button>
+                        )}
+                      </div>
 
                       {!isCorrect && (
                         <div className="border-t border-slate-700/60 pt-3 space-y-3">
@@ -3787,7 +4016,7 @@ export default function App() {
 
           {/* USER PROFILE & HISTORY VIEW */}
           {currentView === 'profile' && (
-            <div className="max-w-4xl mx-auto space-y-6">
+            <div id="profile-report" className="max-w-4xl mx-auto space-y-6">
               <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl flex items-center space-x-4">
                 <div className="w-16 h-16 bg-gradient-to-tr from-blue-600 to-indigo-600 rounded-full flex items-center justify-center text-white font-black text-xl shadow-lg">
                   {currentMember.name.slice(0, 2).toUpperCase()}
@@ -3856,7 +4085,7 @@ export default function App() {
                 </div>
                 <div className="bg-slate-800 border border-slate-700 rounded-xl p-4">
                   <p className="text-xs text-slate-400">Best Marks</p>
-                  <p className="text-2xl font-black text-emerald-400 mt-1">{selectedExamHistory.length ? Math.max(...selectedExamHistory.map((attempt) => attempt.score)) : 0}/10</p>
+                  <p className="text-2xl font-black text-emerald-400 mt-1">{bestExamAttempt ? `${bestExamAttempt.score}/${bestExamAttempt.total || 10}` : '0/0'}</p>
                 </div>
                 <div className="bg-slate-800 border border-slate-700 rounded-xl p-4">
                   <p className="text-xs text-slate-400">Average Accuracy</p>
@@ -3867,6 +4096,155 @@ export default function App() {
                   <p className="text-2xl font-black text-amber-400 mt-1">{selectedExamQuestionCount}</p>
                 </div>
               </div>
+
+              <section aria-label="Progress report tools" className="rounded-2xl border border-slate-700 bg-slate-800/80 p-5 shadow-xl print:hidden">
+                <div className="flex flex-wrap items-center justify-between gap-4">
+                  <div>
+                    <h3 className="text-lg font-bold text-white">Your preparation tools</h3>
+                    <p className="mt-1 text-xs text-slate-400">Export your {selectedExam} progress, print this report, or start a timed simulation.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button type="button" onClick={() => downloadProgressReport('csv')} className="rounded-lg border border-slate-600 px-3 py-2 text-xs font-bold text-slate-100 hover:bg-slate-700">Download CSV</button>
+                    <button type="button" onClick={() => downloadProgressReport('json')} className="rounded-lg border border-slate-600 px-3 py-2 text-xs font-bold text-slate-100 hover:bg-slate-700">Download JSON</button>
+                    <button type="button" onClick={() => window.print()} className="rounded-lg border border-blue-400/30 bg-blue-500/10 px-3 py-2 text-xs font-bold text-blue-100 hover:bg-blue-500/20">Print report</button>
+                    <button type="button" onClick={() => { setRevisionMockMode('exam-day'); setRevisionMockQuestionCount(120); setRevisionMockDurationMinutes(120); setCurrentView('revision-mock'); }} disabled={!selectedExamProgress.length} className="rounded-lg bg-indigo-600 px-3 py-2 text-xs font-bold text-white hover:bg-indigo-500 disabled:opacity-50">Exam-day simulation</button>
+                  </div>
+                </div>
+              </section>
+
+              <section aria-labelledby="revision-reminders-heading" className="rounded-2xl border border-amber-500/20 bg-slate-800/80 p-5 shadow-xl">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.18em] text-amber-300">Adaptive reminders</p>
+                    <h3 id="revision-reminders-heading" className="mt-1 text-lg font-bold text-white">Spaced revision plan</h3>
+                  </div>
+                  <span className="rounded-full border border-amber-400/20 bg-amber-500/10 px-3 py-1 text-xs font-bold text-amber-100">{spacedRevisionRecommendations.filter((item) => item.daysUntilDue <= 0).length} due now</span>
+                </div>
+                <p className="mt-2 text-xs leading-5 text-slate-400">Review intervals adapt to your latest topic accuracy: weaker topics return sooner, while stronger topics are spaced further apart.</p>
+                {spacedRevisionRecommendations.length ? (
+                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                    {spacedRevisionRecommendations.map((item) => (
+                      <div key={`${item.subject}:${item.topic}`} className="flex items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-900/60 p-3">
+                        <div className="min-w-0">
+                          <p className="truncate text-xs font-bold text-white">{item.subject} · {item.topic}</p>
+                          <p className="mt-1 text-[11px] text-slate-400">{item.accuracy}% latest accuracy · {item.intervalDays}-day interval · due {item.dueAt}</p>
+                        </div>
+                        <button type="button" onClick={() => handlePracticeTopic(item.subject, item.topic)} className="shrink-0 rounded-lg border border-amber-400/30 px-2.5 py-1.5 text-[10px] font-bold text-amber-100 hover:bg-amber-500/10">Revise</button>
+                      </div>
+                    ))}
+                  </div>
+                ) : <p className="mt-4 text-sm text-slate-400">Complete a topic test to get your first personalized revision reminder.</p>}
+              </section>
+
+              <section aria-labelledby="mistake-notebook-heading" className="rounded-2xl border border-rose-500/20 bg-slate-800/80 p-5 shadow-xl">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.18em] text-rose-300">Learn from review</p>
+                    <h3 id="mistake-notebook-heading" className="mt-1 text-lg font-bold text-white">Mistake notebook</h3>
+                  </div>
+                  <span className="rounded-full bg-rose-500/10 px-3 py-1 text-xs font-bold text-rose-200">{mistakeNotebook.length} items</span>
+                </div>
+                {mistakeNotebook.length ? (
+                  <div className="mt-4 space-y-2">
+                    {mistakeNotebook.slice(0, 15).map((item, index) => (
+                      <div key={`${item.attemptId}:${item.id || index}`} className="flex flex-col gap-2 rounded-xl border border-slate-700 bg-slate-900/60 p-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold leading-5 text-slate-100">{item.question || 'Question details unavailable'}</p>
+                          <p className="mt-1 text-[11px] text-slate-400">{item.subject} · {item.topic} · {item.answerStatus} · {item.date}</p>
+                          <p className="mt-1 text-[11px] text-emerald-200">Correct answer: {item.correctAnswer || 'Not recorded'}</p>
+                        </div>
+                        {item.topic && <button type="button" onClick={() => handlePracticeTopic(item.subject || selectedSubject, item.topic)} className="shrink-0 rounded-lg border border-rose-400/30 px-2.5 py-1.5 text-[10px] font-bold text-rose-100 hover:bg-rose-500/10">Practice topic</button>}
+                      </div>
+                    ))}
+                    {mistakeNotebook.length > 15 && <p className="pt-1 text-xs text-slate-400">Showing the latest 15 of {mistakeNotebook.length} notebook entries.</p>}
+                  </div>
+                ) : <p className="mt-4 text-sm text-slate-400">Incorrect and unanswered questions from your completed tests will appear here.</p>}
+              </section>
+
+              <section aria-labelledby="test-insights-heading" className="rounded-2xl border border-blue-500/20 bg-slate-800/80 p-5 shadow-xl">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.18em] text-blue-300">Performance analytics</p>
+                    <h3 id="test-insights-heading" className="mt-1 text-lg font-bold text-white">Mock-test insights</h3>
+                  </div>
+                  {mockTestInsights.recent.length > 0 && <p className="text-xs text-slate-300">Average pace: <strong className="text-blue-200">{Math.round(mockTestInsights.recent.reduce((sum, item) => sum + item.averageSecondsPerQuestion, 0) / mockTestInsights.recent.length)} sec/question</strong></p>}
+                </div>
+                {mockTestInsights.recent.length ? (
+                  <div className="mt-4 space-y-3">
+                    <div className="flex flex-wrap gap-3 text-xs">
+                      <p className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-emerald-100">Strongest: {mockTestInsights.strongest ? `${mockTestInsights.strongest.topic} (${mockTestInsights.strongest.accuracy}%)` : 'Not enough topic data'}</p>
+                      <p className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100">Needs work: {mockTestInsights.needsWork ? `${mockTestInsights.needsWork.topic} (${mockTestInsights.needsWork.accuracy}%)` : 'Not enough topic data'}</p>
+                    </div>
+                    <div className="space-y-2">
+                      {mockTestInsights.recent.map((item) => (
+                        <div key={`${item.name}:${item.date}`} className="grid grid-cols-[4.5rem_1fr_auto] items-center gap-3 text-xs">
+                          <span className="text-slate-400">{item.date || item.name}</span>
+                          <div className="h-2 overflow-hidden rounded-full bg-slate-700" role="img" aria-label={`${item.accuracy}% accuracy`}>
+                            <div className={`h-full rounded-full ${item.accuracy >= 70 ? 'bg-emerald-500' : item.accuracy >= 50 ? 'bg-amber-500' : 'bg-rose-500'}`} style={{ width: `${Math.min(100, Math.max(0, item.accuracy))}%` }} />
+                          </div>
+                          <span className="font-bold text-slate-200">{item.accuracy}% · {item.averageSecondsPerQuestion}s/q</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ) : <p className="mt-4 text-sm text-slate-400">Complete tests to see accuracy trends, topic strengths, and your average time per question.</p>}
+              </section>
+
+              <section aria-labelledby="saved-questions-heading" className="rounded-2xl border border-teal-500/20 bg-slate-800/80 p-5 shadow-xl">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.18em] text-teal-300">Build a custom test</p>
+                    <h3 id="saved-questions-heading" className="mt-1 text-lg font-bold text-white">Saved questions</h3>
+                  </div>
+                  <span className="rounded-full bg-teal-500/10 px-3 py-1 text-xs font-bold text-teal-100">{selectedExamBookmarks.length} saved</span>
+                </div>
+                {accountDataError && <p role="alert" className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{accountDataError}</p>}
+                {selectedExamBookmarks.length ? (
+                  <>
+                    <div className="mt-4 space-y-2">
+                      {selectedExamBookmarks.map((item) => (
+                        <div key={item.id} className="flex items-start gap-3 rounded-xl border border-slate-700 bg-slate-900/60 p-3">
+                          <input aria-label={`Select saved question: ${item.question}`} type="checkbox" checked={selectedBookmarkIds.includes(item.id)} onChange={(event) => setSelectedBookmarkIds((previous) => event.target.checked ? [...new Set([...previous, item.id])] : previous.filter((id) => id !== item.id))} className="mt-1 accent-teal-500" />
+                          <span className="min-w-0 flex-1">
+                            <span className="block text-xs font-semibold leading-5 text-slate-100">{item.question}</span>
+                            <span className="mt-1 block text-[11px] text-slate-400">{item.subject} · {item.topic}</span>
+                          </span>
+                          <button type="button" onClick={(event) => { event.preventDefault(); event.stopPropagation(); void handleToggleBookmark(item, { exam: item.exam, subject: item.subject, topic: item.topic, difficulty: item.difficulty }); }} disabled={isSavingBookmarks} className="shrink-0 text-[10px] font-bold text-rose-300 hover:text-rose-200 disabled:opacity-50">Remove</button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-end">
+                      <label className="text-xs font-semibold text-slate-300">Practice duration
+                        <select value={bookmarkPracticeDuration} onChange={(event) => setBookmarkPracticeDuration(Number(event.target.value))} className="mt-1 block rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+                          {[10, 20, 30, 40, 50, 60, 90, 120].map((minutes) => <option key={minutes} value={minutes}>{minutes} minutes</option>)}
+                        </select>
+                      </label>
+                      <button type="button" onClick={() => void handleStartBookmarkedPractice()} disabled={!selectedBookmarkIds.length || isGeneratingQuestions} className="rounded-lg bg-teal-600 px-4 py-2.5 text-xs font-bold text-white hover:bg-teal-500 disabled:opacity-50">
+                        {isGeneratingQuestions ? 'Preparing…' : `Practice selected (${selectedBookmarkIds.length})`}
+                      </button>
+                    </div>
+                    {questionGenerationError && <p role="alert" className="mt-3 text-xs text-rose-200">{questionGenerationError}</p>}
+                  </>
+                ) : <p className="mt-4 text-sm text-slate-400">Save questions from a test review to build a personal practice set.</p>}
+              </section>
+
+              <section aria-labelledby="accessibility-heading" className="rounded-2xl border border-slate-700 bg-slate-800/80 p-5 shadow-xl print:hidden">
+                <h3 id="accessibility-heading" className="text-lg font-bold text-white">Accessibility & language</h3>
+                <div className="mt-4 flex flex-wrap items-center gap-4">
+                  <label className="text-xs font-semibold text-slate-300">Text size
+                    <select value={textScale} onChange={(event) => setTextScale(event.target.value)} className="ml-2 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+                      <option value="16px">Standard</option>
+                      <option value="18px">Large</option>
+                      <option value="20px">Extra large</option>
+                    </select>
+                  </label>
+                  <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-300">
+                    <input type="checkbox" checked={highContrast} onChange={(event) => setHighContrast(event.target.checked)} className="accent-teal-500" />
+                    High contrast
+                  </label>
+                </div>
+                <p className="mt-3 text-xs text-slate-400">Display preferences stay in this browser. Telugu explanations are available beside reviewed questions.</p>
+              </section>
 
               <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl space-y-4">
                 <h3 className="text-lg font-bold text-white">Attempt Log</h3>
@@ -3888,11 +4266,11 @@ export default function App() {
                         <tr key={att.id} className="hover:bg-slate-700/30 transition">
                           <td className="p-3 font-semibold text-slate-100">
                             <button onClick={() => handleViewAttempt(att)} className="text-left text-blue-300 hover:text-blue-200 underline underline-offset-2">
-                              {att.topic}
+                              {att.mode === 'exam-day' ? 'Exam-day simulation' : att.mode === 'bookmark-practice' ? 'Saved-question practice' : att.mode === 'revision-mock' ? 'Revision mock' : att.topic}
                             </button>
                           </td>
                           <td className="p-3">{att.difficulty}</td>
-                          <td className="p-3 font-bold text-blue-400">{att.score}/10</td>
+                          <td className="p-3 font-bold text-blue-400">{att.score}/{att.total || 10}</td>
                           <td className="p-3">{att.accuracy}%</td>
                           <td className="p-3">
                             <span className={`px-2 py-0.5 rounded font-bold text-[10px] ${att.status === 'LEVEL PASSED' ? 'bg-emerald-500/20 text-emerald-400' : 'bg-amber-500/20 text-amber-400'
@@ -3900,7 +4278,7 @@ export default function App() {
                               {att.status}
                             </span>
                           </td>
-                          <td className="p-3 text-slate-400">{att.date}</td>
+                          <td className="p-3 text-slate-400">{att.date || att.submittedAt?.slice(0, 10)}</td>
                         </tr>
                       ))}
                     </tbody>

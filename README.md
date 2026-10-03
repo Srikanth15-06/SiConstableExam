@@ -16,10 +16,14 @@ This repository has two separately installed parts:
 - Generate ten validated practice questions through Gemini, create study notes through Groq, and ask contextual study questions through OpenRouter.
 - Take practice tests and review answers, explanations, shortcuts, scores, and test history.
 - Use the dashboard's **Syllabus Modules → All · Revision Mock Tests** entry to create a 10-, 20-, 30-, 40-, 50-, 60-, 90-, or 120-minute test with 10, 20, 30, 40, 50, 60, 90, or 120 questions sampled from practiced topics across subjects. Topic selection prioritizes syllabus weightage and areas needing revision; repeat mocks rotate through the practiced-topic pool. Scores update each topic's progress independently.
+- Run an **Exam-day simulation** from the same screen. It defaults to a 120-question, 120-minute practice run and cycles through the app's subject order using practiced topics; it is an approximate simulation, not an official exam blueprint.
+- Use **Profile & History** for a mistake notebook, accuracy-adaptive spaced-revision reminders, test-performance trends and topic insights, and average pacing.
+- Save questions from result reviews and assemble timed custom practice sets from saved questions. Saved items are account-specific and capped at 100 per account.
+- Export progress as CSV or JSON, print a profile report, and adjust browser-local text size and high-contrast preferences. Reviewed questions also offer AI-generated Telugu explanations.
 - Track topic progress and use the Smart Study Planner for revision and manual tasks.
 - Generate an AI-ranked full-syllabus schedule personalized to exam role, remaining days, daily study time, topic completion, accuracy, practice activity, and exam weightage. The schedule assigns every syllabus topic, adjusts session lengths when time is tight, and refreshes as progress changes.
 - Connect Google Drive to browse topic folders, preview or download notes, provision subject/topic folders, and upload supported files (up to 20 MB).
-- Secure candidate accounts with Supabase-backed sessions, progress, test history, and planner data.
+- Secure candidate accounts with Supabase-backed sessions, progress, test history, planner data, and saved questions.
 
 ## Architecture and requests
 

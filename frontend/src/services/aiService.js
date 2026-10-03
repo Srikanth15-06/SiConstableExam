@@ -67,6 +67,10 @@ export async function saveCurrentCandidatePlanner(plannerData, expectedRevision 
   return requestCandidateApi('/api/me/planner', { method: 'PUT', body: { plannerData, expectedRevision } });
 }
 
+export async function saveCurrentCandidateBookmarks(savedQuestions) {
+  return requestCandidateApi('/api/me/bookmarks', { method: 'PUT', body: { savedQuestions } });
+}
+
 export async function createTestAttempt({ exam, subject, topic, difficulty }) {
   const idempotencyKey = crypto.randomUUID();
   return requestCandidateApi('/api/tests', {
@@ -76,11 +80,19 @@ export async function createTestAttempt({ exam, subject, topic, difficulty }) {
   });
 }
 
-export async function createRevisionMockAttempt({ exam, questionCount, durationMinutes }) {
+export async function createBookmarkedTestAttempt({ questionIds, durationMinutes }) {
+  return requestCandidateApi('/api/tests/bookmarked', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': crypto.randomUUID() },
+    body: { questionIds, durationMinutes }
+  });
+}
+
+export async function createRevisionMockAttempt({ exam, questionCount, durationMinutes, mode = 'revision-mock' }) {
   return requestCandidateApi('/api/tests/mock', {
     method: 'POST',
     headers: { 'Idempotency-Key': crypto.randomUUID() },
-    body: { exam, questionCount, durationMinutes }
+    body: { exam, questionCount, durationMinutes, mode }
   });
 }
 

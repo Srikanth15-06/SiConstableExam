@@ -273,6 +273,91 @@ test('revision mock route accepts the configured short and long lengths', async 
     assert.equal(generated.length, 1);
 });
 
+test('saved questions are account-scoped and can be used in a scored practice test', async (context) => {
+    const { server, baseUrl, dataStore } = await createServer();
+    context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+    const candidate = await signUp(baseUrl, 'Candidate', 'bookmarks@example.test');
+    const otherCandidate = await signUp(baseUrl, 'Other Candidate', 'other-bookmarks@example.test');
+    const bookmark = {
+        id: 'saved-percentages-q1', exam: 'SI', subject: 'Arithmetic', topic: 'Percentages', difficulty: 'Beginner',
+        question: 'What is 10% of 50?', options: ['5', '10', '15', '20'], correctAnswer: '5',
+        explanation: 'Multiply 50 by 0.10.'
+    };
+    const headers = authHeaders(candidate.cookie);
+    const saveResponse = await fetch(`${baseUrl}/api/me/bookmarks`, {
+        method: 'PUT', headers, body: JSON.stringify({ savedQuestions: [bookmark] })
+    });
+    assert.equal(saveResponse.status, 200);
+    assert.deepEqual((await saveResponse.json()).savedQuestions.map((item) => item.id), [bookmark.id]);
+    assert.deepEqual(dataStore.records.get(candidate.user.userId).savedQuestions.map((item) => item.id), [bookmark.id]);
+
+    const foreignUse = await fetch(`${baseUrl}/api/tests/bookmarked`, {
+        method: 'POST',
+        headers: { ...authHeaders(otherCandidate.cookie), 'Idempotency-Key': randomUUID() },
+        body: JSON.stringify({ questionIds: [bookmark.id], durationMinutes: 10 })
+    });
+    assert.equal(foreignUse.status, 400);
+    assert.equal((await foreignUse.json()).code, 'INVALID_BOOKMARK_SET');
+
+    const createResponse = await fetch(`${baseUrl}/api/tests/bookmarked`, {
+        method: 'POST',
+        headers: { ...headers, 'Idempotency-Key': randomUUID() },
+        body: JSON.stringify({ questionIds: [bookmark.id], durationMinutes: 10 })
+    });
+    const { attempt } = await createResponse.json();
+    assert.equal(createResponse.status, 201);
+    assert.equal(attempt.mode, 'bookmark-practice');
+    assert.equal(attempt.questions.length, 1);
+    assert.equal(JSON.stringify(attempt).includes('correctAnswer'), false);
+
+    const submitResponse = await fetch(`${baseUrl}/api/tests/${attempt.attemptId}/submit`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ answers: [{ questionId: attempt.questions[0].id, selectedAnswer: '5' }] })
+    });
+    const { result } = await submitResponse.json();
+    assert.equal(submitResponse.status, 200);
+    assert.equal(result.mode, 'bookmark-practice');
+    assert.equal(result.total, 1);
+    assert.equal(result.correct, 1);
+    assert.equal(result.questions[0].status, 'CORRECT');
+    assert.equal(dataStore.records.get(candidate.user.userId).userProgress[getProgressKey('SI', 'Arithmetic', 'Percentages')].attempts, 1);
+});
+
+test('exam-day simulations rotate across practiced app subjects without claiming an official blueprint', async (context) => {
+    const { server, baseUrl, dataStore } = await createServer();
+    context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+    const user = await signUp(baseUrl, 'Candidate', 'exam-day@example.test');
+    const headers = authHeaders(user.cookie);
+    const record = dataStore.records.get(user.user.userId);
+    const practiced = [
+        ['Arithmetic', 'Percentages'],
+        ['Reasoning', 'Coding-Decoding'],
+        ['General Studies', 'Indian Polity'],
+        ['Telangana GK', 'Telangana Formation'],
+        ['English', 'Grammar & Prepositions']
+    ];
+    for (const [subject, topic] of practiced) {
+        record.userProgress[getProgressKey('SI', subject, topic)] = {
+            exam: 'SI', subject, topic, level: 'Beginner', attempts: 1,
+            bestScore: 6, correctAnswers: 6, totalQuestions: 10, accuracy: 60
+        };
+    }
+    const response = await fetch(`${baseUrl}/api/tests/mock`, {
+        method: 'POST',
+        headers: { ...headers, 'Idempotency-Key': randomUUID() },
+        body: JSON.stringify({ exam: 'SI', questionCount: 50, durationMinutes: 50, mode: 'exam-day' })
+    });
+    const { attempt } = await response.json();
+    assert.equal(response.status, 201);
+    assert.equal(attempt.mode, 'exam-day');
+    assert.equal(attempt.topic, 'Exam-day simulation');
+    assert.deepEqual(
+        Array.from({ length: 5 }, (_, index) => attempt.questions[index * 10].subject),
+        practiced.map(([subject]) => subject)
+    );
+});
+
 test('repeated test creation with the same idempotency key reuses one attempt', async (context) => {
     let generatorCalls = 0;
     let releaseGenerators;

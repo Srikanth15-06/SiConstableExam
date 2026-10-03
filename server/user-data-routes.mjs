@@ -10,6 +10,7 @@ import { createAuthenticationMiddleware } from './auth-service.mjs';
 const DIFFICULTIES = new Set(['Beginner', 'Intermediate', 'Expert', 'Pro']);
 const MOCK_QUESTION_COUNTS = new Set([10, 20, 30, 40, 50, 60, 90, 120]);
 const MOCK_DURATION_MINUTES = new Set([10, 20, 30, 40, 50, 60, 90, 120]);
+const MAX_BOOKMARKED_QUESTIONS = 100;
 const MAX_PLANNER_BYTES = 250_000;
 const MAX_PLANNER_TASKS = 1000;
 const passThrough = (_req, _res, next) => next();
@@ -37,6 +38,42 @@ function publicQuestion(question) {
     }
     safe.questionId = String(question.id || question.questionId || '');
     return safe;
+}
+
+function sanitizeBookmarks(value) {
+    if (!Array.isArray(value) || value.length > MAX_BOOKMARKED_QUESTIONS) return null;
+    const result = [];
+    const ids = new Set();
+    for (const item of value) {
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+        const id = String(item.id || '').trim();
+        const exam = normalizeExam(item.exam);
+        const subject = String(item.subject || '').trim();
+        const topic = String(item.topic || '').trim();
+        const question = String(item.question || '').trim();
+        const options = item.options;
+        const correctAnswer = String(item.correctAnswer || '').trim();
+        if (!id || id.length > 200 || ids.has(id) || !exam || !Object.hasOwn(SUBJECT_TOPICS, subject)
+            || !SUBJECT_TOPICS[subject].includes(topic) || !question || question.length > 3000
+            || !Array.isArray(options) || options.length < 2 || options.length > 6
+            || options.some((option) => typeof option !== 'string' || !option.trim() || option.length > 500)
+            || !options.includes(correctAnswer)) return null;
+        ids.add(id);
+        result.push({
+            id,
+            exam: exam.local,
+            subject,
+            topic,
+            difficulty: DIFFICULTIES.has(item.difficulty) ? item.difficulty : 'Beginner',
+            question,
+            options,
+            correctAnswer,
+            explanation: String(item.explanation || '').slice(0, 3000),
+            shortcut: String(item.shortcut || '').slice(0, 1000),
+            questionType: String(item.questionType || '').slice(0, 100)
+        });
+    }
+    return result;
 }
 
 function publicAttempt(attempt) {
@@ -157,6 +194,7 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
                     activeAttempt: publicAttempt(activeAttempt),
                     userProgress: record.userProgress,
                     testHistory: record.testHistory,
+                    savedQuestions: Array.isArray(record.savedQuestions) ? record.savedQuestions : [],
                     legacyArchive: record.legacyArchive || null,
                     seenQuestionCount: record.seenQuestionCount,
                     testAttemptCounter: record.testAttemptCounter,
@@ -219,11 +257,109 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
         }
     });
 
+    router.put('/me/bookmarks', authenticate, requireTrustedOrigin, rateLimiters.userData || passThrough, async (req, res) => {
+        const savedQuestions = sanitizeBookmarks(req.body?.savedQuestions);
+        if (!savedQuestions) {
+            routeError(res, 400, 'INVALID_BOOKMARKS', 'Saved questions are invalid or exceed the 100-question limit.');
+            return;
+        }
+        try {
+            await dataStore.updateUserData(req.authUserId, (record) => {
+                record.savedQuestions = savedQuestions;
+                return record;
+            });
+            res.json({ success: true, savedQuestions });
+        } catch (error) {
+            safeStorageFailure(res, randomUUID(), error, 'bookmark-update');
+        }
+    });
+
+    router.post('/tests/bookmarked', authenticate, requireTrustedOrigin, rateLimiters.userData || passThrough, rateLimiters.createTest || passThrough, async (req, res) => {
+        const selectedIds = req.body?.questionIds;
+        const durationMinutes = Number(req.body?.durationMinutes);
+        const idempotencyKey = String(req.get('idempotency-key') || '').trim();
+        if (!Array.isArray(selectedIds) || selectedIds.length < 1 || selectedIds.length > MAX_BOOKMARKED_QUESTIONS
+            || selectedIds.some((id) => typeof id !== 'string') || new Set(selectedIds).size !== selectedIds.length
+            || !MOCK_DURATION_MINUTES.has(durationMinutes)) {
+            routeError(res, 400, 'INVALID_BOOKMARK_SET', 'Choose saved questions and a valid practice duration.');
+            return;
+        }
+        if (!/^[a-f\d-]{36}$/i.test(idempotencyKey)) {
+            routeError(res, 400, 'INVALID_IDEMPOTENCY_KEY', 'A valid test request identifier is required.');
+            return;
+        }
+        try {
+            const beforeGeneration = await dataStore.getUserData(req.authUserId);
+            const priorAttempt = beforeGeneration.attempts.find((attempt) => attempt.idempotencyKey === idempotencyKey);
+            if (priorAttempt) {
+                res.json({ success: true, attempt: publicAttempt(priorAttempt) });
+                return;
+            }
+            if (newestActiveAttempt(beforeGeneration.attempts)) {
+                routeError(res, 409, 'ATTEMPT_IN_PROGRESS', 'Finish or submit your current test before starting saved-question practice.');
+                return;
+            }
+            const savedQuestions = Array.isArray(beforeGeneration.savedQuestions) ? beforeGeneration.savedQuestions : [];
+            const selected = selectedIds.map((id) => savedQuestions.find((item) => item.id === id));
+            if (selected.some((item) => !item) || selected.some((item) => item.exam !== selected[0]?.exam)) {
+                routeError(res, 400, 'INVALID_BOOKMARK_SET', 'One or more selected questions are not saved in your account.');
+                return;
+            }
+            const attempt = {
+                attemptId: randomUUID(),
+                idempotencyKey,
+                userId: req.authUserId,
+                exam: selected[0].exam,
+                subject: 'Saved questions',
+                topic: 'Bookmark practice',
+                difficulty: 'Mixed',
+                mode: 'bookmark-practice',
+                durationSeconds: durationMinutes * 60,
+                startedAt: new Date().toISOString(),
+                status: 'in_progress',
+                questions: selected.map((item, index) => ({
+                    ...item,
+                    id: `saved_${index + 1}_${item.id}`,
+                    questionNumber: index + 1
+                })),
+                answers: {},
+                result: null,
+                submittedAt: null
+            };
+            let persistedAttempt;
+            let createdAttempt = false;
+            const record = await dataStore.updateUserData(req.authUserId, (current) => {
+                const prior = current.attempts.find((item) => item.idempotencyKey === idempotencyKey);
+                if (prior) {
+                    persistedAttempt = prior;
+                    return current;
+                }
+                if (newestActiveAttempt(current.attempts)) {
+                    persistedAttempt = newestActiveAttempt(current.attempts);
+                    return current;
+                }
+                current.attempts.push(attempt);
+                current.seenQuestionCount = (Number(current.seenQuestionCount) || 0) + selected.length;
+                persistedAttempt = attempt;
+                createdAttempt = true;
+                return current;
+            });
+            if (!record.attempts.some((item) => item.attemptId === persistedAttempt.attemptId)) {
+                routeError(res, 503, 'TEST_STORAGE_UNAVAILABLE', 'The saved-question test could not be stored. Please retry.');
+                return;
+            }
+            res.status(createdAttempt ? 201 : 200).json({ success: true, attempt: publicAttempt(persistedAttempt) });
+        } catch (error) {
+            safeStorageFailure(res, randomUUID(), error, 'bookmarked-test-create');
+        }
+    });
+
     router.post('/tests/mock', authenticate, requireTrustedOrigin, rateLimiters.userData || passThrough, rateLimiters.createTest || passThrough, async (req, res) => {
         const exam = normalizeExam(req.body?.exam);
         const questionCount = Number(req.body?.questionCount);
         const durationMinutes = Number(req.body?.durationMinutes);
         const idempotencyKey = String(req.get('idempotency-key') || '').trim();
+        const mode = req.body?.mode === 'exam-day' ? 'exam-day' : 'revision-mock';
         if (!exam || !MOCK_QUESTION_COUNTS.has(questionCount) || !MOCK_DURATION_MINUTES.has(durationMinutes)) {
             routeError(res, 400, 'INVALID_MOCK_CONFIGURATION', 'Choose a valid exam, question count, and test duration.');
             return;
@@ -242,7 +378,7 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
             }
             const activeAttempt = newestActiveAttempt(beforeGeneration.attempts);
             if (activeAttempt) {
-                routeError(res, 409, 'ATTEMPT_IN_PROGRESS', 'Finish or submit your current test before starting a revision mock.');
+                routeError(res, 409, 'ATTEMPT_IN_PROGRESS', 'Finish or submit your current test before starting another test.');
                 return;
             }
 
@@ -266,9 +402,23 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
             }
 
             const questionChunks = questionCount / 10;
-            const priorMockCount = beforeGeneration.attempts.filter((attempt) => attempt.mode === 'revision-mock' && attempt.exam === exam.local).length;
+            const priorMockCount = beforeGeneration.attempts.filter((attempt) => ['revision-mock', 'exam-day'].includes(attempt.mode) && attempt.exam === exam.local).length;
             const topicOffset = (priorMockCount * questionChunks) % practicedTopics.length;
-            const selectedTopics = Array.from({ length: questionChunks }, (_, index) => practicedTopics[(topicOffset + index) % practicedTopics.length]);
+            const subjectOrder = ['Arithmetic', 'Reasoning', 'General Studies', 'Telangana GK', 'English'];
+            const topicsBySubject = new Map(subjectOrder.map((subject) => [
+                subject,
+                practicedTopics.filter((topic) => topic.subject === subject)
+            ]));
+            const selectedTopics = mode === 'exam-day'
+                ? Array.from({ length: questionChunks }, (_, index) => {
+                    const sequence = index + priorMockCount;
+                    const subject = subjectOrder[sequence % subjectOrder.length];
+                    const sectionTopics = topicsBySubject.get(subject);
+                    if (!sectionTopics.length) return practicedTopics[(topicOffset + index) % practicedTopics.length];
+                    const topicIndex = Math.floor(sequence / subjectOrder.length) % sectionTopics.length;
+                    return sectionTopics[topicIndex];
+                })
+                : Array.from({ length: questionChunks }, (_, index) => practicedTopics[(topicOffset + index) % practicedTopics.length]);
             const previousQuestionSignatures = beforeGeneration.testHistory
                 .flatMap((attempt) => (attempt.questions || []).map((question) => question.question))
                 .filter(Boolean)
@@ -320,9 +470,9 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
                 userId: req.authUserId,
                 exam: exam.local,
                 subject: 'All subjects',
-                topic: 'Revision mock test',
+                topic: mode === 'exam-day' ? 'Exam-day simulation' : 'Revision mock test',
                 difficulty: 'Mixed',
-                mode: 'revision-mock',
+                mode,
                 durationSeconds: durationMinutes * 60,
                 startedAt: new Date().toISOString(),
                 status: 'in_progress',
@@ -394,8 +544,8 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
             }
             const activeAttempt = newestActiveAttempt(beforeGeneration.attempts);
             if (activeAttempt) {
-                if (activeAttempt.mode === 'revision-mock') {
-                    routeError(res, 409, 'ATTEMPT_IN_PROGRESS', 'Finish or submit your current mock test before starting a topic test.');
+                if (['revision-mock', 'exam-day', 'bookmark-practice'].includes(activeAttempt.mode)) {
+                    routeError(res, 409, 'ATTEMPT_IN_PROGRESS', 'Finish or submit your current practice test before starting a topic test.');
                     return;
                 }
                 res.json({ success: true, attempt: publicAttempt(activeAttempt) });
@@ -496,7 +646,7 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
                     throw Object.assign(new Error('too many answers'), { code: 'INVALID_ANSWERS' });
                 }
                 const elapsedSeconds = Math.max(0, Math.floor((Date.now() - Date.parse(attempt.startedAt)) / 1000));
-                if (attempt.mode === 'revision-mock' && elapsedSeconds >= attempt.durationSeconds) {
+                if (attempt.mode !== 'topic' && elapsedSeconds >= attempt.durationSeconds) {
                     throw Object.assign(new Error('test time expired'), { code: 'TEST_TIME_EXPIRED' });
                 }
                 const questions = new Map(attempt.questions.map((question) => [question.id, question]));
@@ -527,7 +677,7 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
                 return;
             }
             if (error.code === 'TEST_TIME_EXPIRED') {
-                routeError(res, 409, error.code, 'The mock-test timer has expired. Submit the test to see your result.');
+                routeError(res, 409, error.code, 'The test timer has expired. Submit the test to see your result.');
                 return;
             }
             safeStorageFailure(res, randomUUID(), error, 'test-answer-save');
@@ -563,7 +713,7 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
                 const startedAt = Date.parse(attempt.startedAt);
                 const elapsedSeconds = Number.isFinite(startedAt) ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
                 const configuredDuration = Number(attempt.durationSeconds) || 600;
-                const submittedAnswers = attempt.mode === 'revision-mock' && elapsedSeconds > configuredDuration + 60
+                const submittedAnswers = attempt.mode !== 'topic' && elapsedSeconds > configuredDuration + 60
                     ? (attempt.answers || {})
                     : answerMap;
                 for (const [questionId, selectedAnswer] of Object.entries(submittedAnswers)) {
@@ -584,12 +734,15 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
                 });
                 const submittedAt = new Date();
                 const durationSeconds = Math.min(configuredDuration, elapsedSeconds);
-                const isMock = attempt.mode === 'revision-mock';
-                const isPassed = !isMock && result.total === 10 && result.correct >= 8;
+                if (inputAnswers.length > attempt.questions.length) {
+                    throw Object.assign(new Error('too many answers'), { code: 'INVALID_ANSWERS' });
+                }
+                const isMultiTopic = ['revision-mock', 'exam-day', 'bookmark-practice'].includes(attempt.mode);
+                const isPassed = !isMultiTopic && result.total === 10 && result.correct >= 8;
                 const nextLevel = { Beginner: 'Intermediate', Intermediate: 'Expert', Expert: 'Pro', Pro: 'Pro' };
                 record.userProgress ||= {};
                 const topicBreakdown = [];
-                if (isMock) {
+                if (isMultiTopic) {
                     const grouped = new Map();
                     for (const detail of result.details) {
                         const key = getProgressKey(attempt.exam, detail.subject, detail.topic);
@@ -653,6 +806,11 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
                     };
                 }
                 const formattedTime = `${String(Math.floor(durationSeconds / 60)).padStart(2, '0')}:${String(durationSeconds % 60).padStart(2, '0')}`;
+                const completionStatus = attempt.mode === 'exam-day'
+                    ? 'EXAM SIMULATION COMPLETED'
+                    : attempt.mode === 'bookmark-practice'
+                        ? 'BOOKMARK PRACTICE COMPLETED'
+                        : 'MOCK TEST COMPLETED';
                 const completed = {
                     attemptId: attempt.attemptId,
                     exam: attempt.exam,
@@ -666,11 +824,12 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
                     unanswered: result.unanswered,
                     percentage: result.percentage,
                     accuracy: result.accuracy,
-                    status: isMock ? 'MOCK TEST COMPLETED' : isPassed ? 'LEVEL PASSED' : 'PRACTICE REQUIRED',
+                    status: isMultiTopic ? completionStatus : isPassed ? 'LEVEL PASSED' : 'PRACTICE REQUIRED',
                     date: submittedAt.toISOString().slice(0, 10),
                     submittedAt: submittedAt.toISOString(),
                     timeTaken: formattedTime,
-                    ...(isMock ? { mode: 'revision-mock', topicBreakdown } : {}),
+                    averageSecondsPerQuestion: result.total ? Math.round(durationSeconds / result.total) : 0,
+                    ...(isMultiTopic ? { mode: attempt.mode, topicBreakdown } : {}),
                     questions: result.details
                 };
                 attempt.status = 'submitted';
@@ -685,6 +844,10 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
         } catch (error) {
             if (error.code === 'ATTEMPT_NOT_FOUND') {
                 routeError(res, 404, 'ATTEMPT_NOT_FOUND', 'Test attempt was not found.');
+                return;
+            }
+            if (error.code === 'INVALID_ANSWERS') {
+                routeError(res, 400, 'INVALID_ANSWERS', 'One or more submitted answers are invalid.');
                 return;
             }
             if (error.code === 'INVALID_ANSWERS') {

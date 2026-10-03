@@ -49,3 +49,56 @@ h4 {
   color: #ecfeff;
   background: rgba(13, 148, 136, 0.65);
 }
+
+#root[data-high-contrast='true'] {
+  color: #fff;
+}
+
+#root[data-high-contrast='true'] :is(.text-slate-400, .text-slate-500, .text-gray-400, .text-gray-500) {
+  color: #e2e8f0 !important;
+}
+
+#root[data-high-contrast='true'] :is([class*='border-slate-'], [class*='border-gray-']) {
+  border-color: #94a3b8 !important;
+}
+
+@media print {
+  @page {
+    margin: 14mm;
+  }
+
+  html,
+  body,
+  #root {
+    min-height: 0 !important;
+    height: auto !important;
+    overflow: visible !important;
+    background: #fff !important;
+  }
+
+  body * {
+    visibility: hidden !important;
+  }
+
+  #profile-report,
+  #profile-report * {
+    visibility: visible !important;
+    color: #111827 !important;
+    border-color: #cbd5e1 !important;
+    box-shadow: none !important;
+    text-shadow: none !important;
+  }
+
+  #profile-report {
+    position: absolute !important;
+    inset: 0 auto auto 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    margin: 0 !important;
+    background: #fff !important;
+  }
+
+  #profile-report :is(button, input, select, .print\:hidden) {
+    display: none !important;
+  }
+}
