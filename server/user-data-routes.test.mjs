@@ -171,6 +171,86 @@ test('test creation creates exactly one active attempt when none exists', async 
     assert.equal(attempts.filter((item) => item.status === 'in_progress').length, 1);
 });
 
+test('revision mocks use practiced topics, configurable lengths, and update each topic progress safely', async (context) => {
+    const { server, baseUrl, dataStore, generated } = await createServer();
+    context.after(() => new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve())));
+    const user = await signUp(baseUrl, 'Candidate', 'revision-mock@example.test');
+    const headers = authHeaders(user.cookie);
+    const createMock = (questionCount, durationMinutes, idempotencyKey = randomUUID()) => fetch(`${baseUrl}/api/tests/mock`, {
+        method: 'POST',
+        headers: { ...headers, 'Idempotency-Key': idempotencyKey },
+        body: JSON.stringify({ exam: 'SI', questionCount, durationMinutes })
+    });
+
+    const invalid = await createMock(50, 60);
+    assert.equal(invalid.status, 400);
+    assert.equal((await invalid.json()).code, 'INVALID_MOCK_CONFIGURATION');
+    const noTopics = await createMock(60, 60);
+    assert.equal(noTopics.status, 400);
+    assert.equal((await noTopics.json()).code, 'NO_PRACTICED_TOPICS');
+    assert.equal(generated.length, 0);
+
+    const record = dataStore.records.get(user.user.userId);
+    for (const [topic, accuracy] of [['Percentages', 60], ['Profit and Loss', 70]]) {
+        record.userProgress[getProgressKey('SI', 'Arithmetic', topic)] = {
+            exam: 'SI', subject: 'Arithmetic', topic, level: 'Beginner',
+            attempts: 1, bestScore: 6, correctAnswers: 6, totalQuestions: 10, accuracy
+        };
+    }
+
+    const created = await createMock(60, 60);
+    const { attempt } = await created.json();
+    assert.equal(created.status, 201);
+    assert.equal(attempt.mode, 'revision-mock');
+    assert.equal(attempt.durationSeconds, 3600);
+    assert.equal(attempt.questions.length, 60);
+    assert.equal(new Set(attempt.questions.map((question) => question.id)).size, 60);
+    assert.deepEqual(new Set(attempt.questions.map((question) => question.topic)), new Set(['Percentages', 'Profit and Loss']));
+    assert.equal(generated.length, 6);
+    assert.ok(generated.every((input) => input.count === 10));
+    assert.equal(JSON.stringify(attempt).includes('correctAnswer'), false);
+
+    const answerList = Array.from({ length: 60 }, (_, index) => ({
+        questionId: attempt.questions[index].id,
+        selectedAnswer: attempt.questions[index].options[0]
+    }));
+    const answerResponse = await fetch(`${baseUrl}/api/tests/${attempt.attemptId}/answers`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ answers: Object.fromEntries(answerList.map((answer) => [answer.questionId, answer.selectedAnswer])) })
+    });
+    assert.equal(answerResponse.status, 200);
+
+    dataStore.records.get(user.user.userId).attempts.find((item) => item.attemptId === attempt.attemptId).startedAt = new Date(Date.now() - 3661_000).toISOString();
+    const expiredSave = await fetch(`${baseUrl}/api/tests/${attempt.attemptId}/answers`, {
+        method: 'PUT',
+        headers,
+        body: JSON.stringify({ answers: { [attempt.questions[0].id]: attempt.questions[0].options[0] } })
+    });
+    assert.equal(expiredSave.status, 409);
+    assert.equal((await expiredSave.json()).code, 'TEST_TIME_EXPIRED');
+    const submitted = await fetch(`${baseUrl}/api/tests/${attempt.attemptId}/submit`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ answers: [] })
+    });
+    assert.equal(submitted.status, 200);
+    const result = (await submitted.json()).result;
+    assert.equal(result.mode, 'revision-mock');
+    assert.equal(result.total, 60);
+    assert.equal(result.correct, 60);
+    assert.equal(result.timeTaken, '60:00');
+    assert.equal(result.topicBreakdown.length, 2);
+    const submittedRecord = dataStore.records.get(user.user.userId);
+    for (const topic of ['Percentages', 'Profit and Loss']) {
+        const progress = submittedRecord.userProgress[getProgressKey('SI', 'Arithmetic', topic)];
+        assert.equal(progress.attempts, 2);
+        assert.equal(progress.totalQuestions, 40);
+        assert.equal(progress.correctAnswers, 36);
+        assert.equal(progress.accuracy, 90);
+    }
+});
+
 test('repeated test creation with the same idempotency key reuses one attempt', async (context) => {
     let generatorCalls = 0;
     let releaseGenerators;

@@ -76,6 +76,14 @@ export async function createTestAttempt({ exam, subject, topic, difficulty }) {
   });
 }
 
+export async function createRevisionMockAttempt({ exam, questionCount, durationMinutes }) {
+  return requestCandidateApi('/api/tests/mock', {
+    method: 'POST',
+    headers: { 'Idempotency-Key': crypto.randomUUID() },
+    body: { exam, questionCount, durationMinutes }
+  });
+}
+
 export async function submitTestAttempt(attemptId, answers) {
   return requestCandidateApi(`/api/tests/${encodeURIComponent(attemptId)}/submit`, {
     method: 'POST',

@@ -2,12 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
 import { Router } from 'express';
 import { calculateTestResult } from '../frontend/src/test-results.js';
-import { getLegacyTopicProgress, getProgressKey, normalizeUserProgress } from '../frontend/src/planner-utils.js';
+import { getLegacyTopicProgress, getProgressKey, normalizeUserProgress, resolveTopicWeightage } from '../frontend/src/planner-utils.js';
 import { EXAM_TYPES, SUBJECT_TOPICS } from '../frontend/src/syllabus.js';
 import { generateQuestions } from './ai-service.mjs';
 import { createAuthenticationMiddleware } from './auth-service.mjs';
 
 const DIFFICULTIES = new Set(['Beginner', 'Intermediate', 'Expert', 'Pro']);
+const MOCK_QUESTION_COUNTS = new Set([60, 90, 100, 150]);
+const MOCK_DURATION_MINUTES = new Set([60, 90, 120]);
 const MAX_PLANNER_BYTES = 250_000;
 const MAX_PLANNER_TASKS = 1000;
 const passThrough = (_req, _res, next) => next();
@@ -45,6 +47,8 @@ function publicAttempt(attempt) {
         subject: attempt.subject,
         topic: attempt.topic,
         difficulty: attempt.difficulty,
+        mode: attempt.mode || 'topic',
+        durationSeconds: attempt.durationSeconds || 600,
         startedAt: attempt.startedAt,
         status: attempt.status,
         questions: attempt.status === 'submitted'
@@ -215,6 +219,157 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
         }
     });
 
+    router.post('/tests/mock', authenticate, requireTrustedOrigin, rateLimiters.userData || passThrough, rateLimiters.createTest || passThrough, async (req, res) => {
+        const exam = normalizeExam(req.body?.exam);
+        const questionCount = Number(req.body?.questionCount);
+        const durationMinutes = Number(req.body?.durationMinutes);
+        const idempotencyKey = String(req.get('idempotency-key') || '').trim();
+        if (!exam || !MOCK_QUESTION_COUNTS.has(questionCount) || !MOCK_DURATION_MINUTES.has(durationMinutes)) {
+            routeError(res, 400, 'INVALID_MOCK_CONFIGURATION', 'Choose a valid exam, question count, and test duration.');
+            return;
+        }
+        if (!/^[a-f\d-]{36}$/i.test(idempotencyKey)) {
+            routeError(res, 400, 'INVALID_IDEMPOTENCY_KEY', 'A valid test request identifier is required.');
+            return;
+        }
+
+        try {
+            const beforeGeneration = await dataStore.getUserData(req.authUserId);
+            const priorAttempt = beforeGeneration.attempts.find((attempt) => attempt.idempotencyKey === idempotencyKey);
+            if (priorAttempt) {
+                res.json({ success: true, attempt: publicAttempt(priorAttempt) });
+                return;
+            }
+            const activeAttempt = newestActiveAttempt(beforeGeneration.attempts);
+            if (activeAttempt) {
+                routeError(res, 409, 'ATTEMPT_IN_PROGRESS', 'Finish or submit your current test before starting a revision mock.');
+                return;
+            }
+
+            const progress = normalizeUserProgress(
+                beforeGeneration.userProgress || {},
+                beforeGeneration.exam || exam.local,
+                beforeGeneration.testHistory,
+                SUBJECT_TOPICS
+            );
+            const practicedTopics = Object.values(progress)
+                .filter((item) => item?.exam === exam.local && Number(item.attempts) > 0
+                    && Object.hasOwn(SUBJECT_TOPICS, item.subject) && SUBJECT_TOPICS[item.subject].includes(item.topic))
+                .sort((left, right) => {
+                    const weightDifference = resolveTopicWeightage(exam.local, right.subject, right.topic, {})
+                        - resolveTopicWeightage(exam.local, left.subject, left.topic, {});
+                    return weightDifference || (Number(left.accuracy) || 0) - (Number(right.accuracy) || 0);
+                });
+            if (!practicedTopics.length) {
+                routeError(res, 400, 'NO_PRACTICED_TOPICS', 'Practice at least one syllabus topic before starting a revision mock test.');
+                return;
+            }
+
+            const questionChunks = questionCount / 10;
+            const priorMockCount = beforeGeneration.attempts.filter((attempt) => attempt.mode === 'revision-mock' && attempt.exam === exam.local).length;
+            const topicOffset = (priorMockCount * questionChunks) % practicedTopics.length;
+            const selectedTopics = Array.from({ length: questionChunks }, (_, index) => practicedTopics[(topicOffset + index) % practicedTopics.length]);
+            const previousQuestionSignatures = beforeGeneration.testHistory
+                .flatMap((attempt) => (attempt.questions || []).map((question) => question.question))
+                .filter(Boolean)
+                .slice(0, 100);
+            const questionSets = [];
+            for (let offset = 0; offset < questionChunks; offset += 3) {
+                const batchTopics = selectedTopics.slice(offset, offset + 3);
+                const batch = await Promise.all(batchTopics.map(async (topicMetric, batchIndex) => {
+                    const chunkIndex = offset + batchIndex;
+                    let generated;
+                    try {
+                        generated = await generateQuestionSet({
+                            exam: exam.provider,
+                            subject: topicMetric.subject,
+                            topic: topicMetric.topic,
+                            difficulty: topicMetric.level || 'Beginner',
+                            count: 10,
+                            attemptSeed: beforeGeneration.testAttemptCounter + chunkIndex + 1,
+                            previousQuestionSignatures: [...previousQuestionSignatures, ...questionSets.flat().map((question) => question.question).filter(Boolean)]
+                        });
+                    } catch {
+                        throw Object.assign(new Error('question generation failed'), { code: 'MOCK_GENERATION_FAILED' });
+                    }
+                    if (!Array.isArray(generated) || generated.length !== 10
+                        || generated.some((question) => !question?.id || !question?.correctAnswer)) {
+                        throw Object.assign(new Error('invalid question set'), { code: 'INVALID_QUESTION_SET' });
+                    }
+                    return generated.map((question, questionIndex) => ({
+                        ...question,
+                        id: `mock_${chunkIndex + 1}_${questionIndex + 1}_${String(question.id)}`,
+                        exam: exam.local,
+                        subject: topicMetric.subject,
+                        topic: topicMetric.topic,
+                        difficulty: question.difficulty || topicMetric.level || 'Beginner',
+                        questionNumber: chunkIndex * 10 + questionIndex + 1
+                    }));
+                }));
+                questionSets.push(...batch);
+            }
+            const questions = questionSets.flat();
+            if (questions.length !== questionCount) {
+                routeError(res, 502, 'INVALID_QUESTION_SET', 'The generated mock test could not be validated. Please try again.');
+                return;
+            }
+
+            const attempt = {
+                attemptId: randomUUID(),
+                idempotencyKey,
+                userId: req.authUserId,
+                exam: exam.local,
+                subject: 'All subjects',
+                topic: 'Revision mock test',
+                difficulty: 'Mixed',
+                mode: 'revision-mock',
+                durationSeconds: durationMinutes * 60,
+                startedAt: new Date().toISOString(),
+                status: 'in_progress',
+                questions,
+                answers: null,
+                result: null,
+                submittedAt: null
+            };
+            let persistedAttempt;
+            let createdAttempt = false;
+            const record = await dataStore.updateUserData(req.authUserId, (current) => {
+                createdAttempt = false;
+                const prior = current.attempts.find((item) => item.idempotencyKey === idempotencyKey);
+                if (prior) {
+                    persistedAttempt = prior;
+                    return current;
+                }
+                const currentActiveAttempt = newestActiveAttempt(current.attempts);
+                if (currentActiveAttempt) {
+                    persistedAttempt = currentActiveAttempt;
+                    return current;
+                }
+                current.attempts.push(attempt);
+                current.testAttemptCounter = Math.max(Number(current.testAttemptCounter) || 0, beforeGeneration.testAttemptCounter + questionChunks);
+                current.seenQuestionCount = (Number(current.seenQuestionCount) || 0) + questionCount;
+                persistedAttempt = attempt;
+                createdAttempt = true;
+                return current;
+            });
+            if (!record.attempts.some((item) => item.attemptId === persistedAttempt.attemptId)) {
+                routeError(res, 503, 'TEST_STORAGE_UNAVAILABLE', 'The test could not be saved. Please retry.');
+                return;
+            }
+            res.status(createdAttempt ? 201 : 200).json({ success: true, attempt: publicAttempt(persistedAttempt) });
+        } catch (error) {
+            if (error.code === 'INVALID_QUESTION_SET') {
+                routeError(res, 502, 'INVALID_QUESTION_SET', 'The generated mock test could not be validated. Please try again.');
+                return;
+            }
+            if (error.code === 'MOCK_GENERATION_FAILED') {
+                routeError(res, 502, 'MOCK_GENERATION_FAILED', 'Questions could not be generated for this mock test. Please try again.');
+                return;
+            }
+            safeStorageFailure(res, randomUUID(), error, 'mock-test-create');
+        }
+    });
+
     router.post('/tests', authenticate, requireTrustedOrigin, rateLimiters.userData || passThrough, rateLimiters.createTest || passThrough, async (req, res) => {
         const exam = normalizeExam(req.body?.exam);
         const subject = typeof req.body?.subject === 'string' ? req.body.subject.trim() : '';
@@ -239,6 +394,10 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
             }
             const activeAttempt = newestActiveAttempt(beforeGeneration.attempts);
             if (activeAttempt) {
+                if (activeAttempt.mode === 'revision-mock') {
+                    routeError(res, 409, 'ATTEMPT_IN_PROGRESS', 'Finish or submit your current mock test before starting a topic test.');
+                    return;
+                }
                 res.json({ success: true, attempt: publicAttempt(activeAttempt) });
                 return;
             }
@@ -323,7 +482,7 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
 
     router.put('/tests/:attemptId/answers', authenticate, requireTrustedOrigin, rateLimiters.userData || passThrough, async (req, res) => {
         const answers = req.body?.answers;
-        if (!answers || typeof answers !== 'object' || Array.isArray(answers) || Object.keys(answers).length > 10) {
+        if (!answers || typeof answers !== 'object' || Array.isArray(answers) || Object.keys(answers).length > 150) {
             routeError(res, 400, 'INVALID_ANSWERS', 'Test answers are invalid.');
             return;
         }
@@ -333,6 +492,13 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
                 const attempt = record.attempts.find((item) => item.attemptId === req.params.attemptId);
                 if (!attempt) throw Object.assign(new Error('attempt missing'), { code: 'ATTEMPT_NOT_FOUND' });
                 if (attempt.status !== 'in_progress') throw Object.assign(new Error('already submitted'), { code: 'ATTEMPT_ALREADY_SUBMITTED' });
+                if (Object.keys(answers).length > attempt.questions.length) {
+                    throw Object.assign(new Error('too many answers'), { code: 'INVALID_ANSWERS' });
+                }
+                const elapsedSeconds = Math.max(0, Math.floor((Date.now() - Date.parse(attempt.startedAt)) / 1000));
+                if (attempt.mode === 'revision-mock' && elapsedSeconds >= attempt.durationSeconds) {
+                    throw Object.assign(new Error('test time expired'), { code: 'TEST_TIME_EXPIRED' });
+                }
                 const questions = new Map(attempt.questions.map((question) => [question.id, question]));
                 const safeAnswers = {};
                 for (const [questionId, selectedAnswer] of Object.entries(answers)) {
@@ -360,14 +526,18 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
                 routeError(res, 409, error.code, 'This test has already been submitted.');
                 return;
             }
+            if (error.code === 'TEST_TIME_EXPIRED') {
+                routeError(res, 409, error.code, 'The mock-test timer has expired. Submit the test to see your result.');
+                return;
+            }
             safeStorageFailure(res, randomUUID(), error, 'test-answer-save');
         }
     });
 
     router.post('/tests/:attemptId/submit', authenticate, requireTrustedOrigin, rateLimiters.userData || passThrough, rateLimiters.submitTest || passThrough, async (req, res) => {
         const inputAnswers = req.body?.answers;
-        if (!Array.isArray(inputAnswers) || inputAnswers.length > 10) {
-            routeError(res, 400, 'INVALID_ANSWERS', 'Submit up to ten selected answers.');
+        if (!Array.isArray(inputAnswers) || inputAnswers.length > 150) {
+            routeError(res, 400, 'INVALID_ANSWERS', 'The submitted answer list is invalid.');
             return;
         }
         const answerMap = {};
@@ -390,45 +560,98 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
                     return record;
                 }
                 const questionById = new Map(attempt.questions.map((question) => [question.id, question]));
-                for (const [questionId, selectedAnswer] of Object.entries(answerMap)) {
+                const startedAt = Date.parse(attempt.startedAt);
+                const elapsedSeconds = Number.isFinite(startedAt) ? Math.max(0, Math.floor((Date.now() - startedAt) / 1000)) : 0;
+                const configuredDuration = Number(attempt.durationSeconds) || 600;
+                const submittedAnswers = attempt.mode === 'revision-mock' && elapsedSeconds > configuredDuration + 60
+                    ? (attempt.answers || {})
+                    : answerMap;
+                for (const [questionId, selectedAnswer] of Object.entries(submittedAnswers)) {
                     const question = questionById.get(questionId);
                     if (!question || !question.options.includes(selectedAnswer)) {
                         throw Object.assign(new Error('invalid answer'), { code: 'INVALID_ANSWERS' });
                     }
                 }
-                const result = calculateTestResult(attempt.questions, answerMap);
-                result.details = result.details.map((detail) => ({ ...detail, id: detail.questionId }));
+                const result = calculateTestResult(attempt.questions, submittedAnswers);
+                result.details = result.details.map((detail) => {
+                    const question = questionById.get(detail.questionId);
+                    return {
+                        ...detail,
+                        id: detail.questionId,
+                        subject: question?.subject || attempt.subject,
+                        topic: question?.topic || attempt.topic
+                    };
+                });
                 const submittedAt = new Date();
-                const startedAt = Date.parse(attempt.startedAt);
-                const elapsedSeconds = Number.isFinite(startedAt) ? Math.max(0, Math.floor((submittedAt.getTime() - startedAt) / 1000)) : 0;
-                const durationSeconds = Math.min(600, elapsedSeconds);
-                const isPassed = result.total === 10 && result.correct >= 8;
+                const durationSeconds = Math.min(configuredDuration, elapsedSeconds);
+                const isMock = attempt.mode === 'revision-mock';
+                const isPassed = !isMock && result.total === 10 && result.correct >= 8;
                 const nextLevel = { Beginner: 'Intermediate', Intermediate: 'Expert', Expert: 'Pro', Pro: 'Pro' };
                 record.userProgress ||= {};
-                const progressKey = getProgressKey(attempt.exam, attempt.subject, attempt.topic);
-                let previous = record.userProgress[progressKey];
-                if (!previous) {
-                    previous = getLegacyTopicProgress(record.userProgress, record.exam, attempt.exam, attempt.subject, attempt.topic, SUBJECT_TOPICS);
-                    if (previous) delete record.userProgress[attempt.topic];
+                const topicBreakdown = [];
+                if (isMock) {
+                    const grouped = new Map();
+                    for (const detail of result.details) {
+                        const key = getProgressKey(attempt.exam, detail.subject, detail.topic);
+                        const group = grouped.get(key) || { subject: detail.subject, topic: detail.topic, correct: 0, total: 0 };
+                        group.total += 1;
+                        if (detail.isCorrect) group.correct += 1;
+                        grouped.set(key, group);
+                    }
+                    for (const [progressKey, group] of grouped) {
+                        const previous = record.userProgress[progressKey] || getLegacyTopicProgress(
+                            record.userProgress, record.exam, attempt.exam, group.subject, group.topic, SUBJECT_TOPICS
+                        ) || { level: 'Beginner', bestScore: 0, attempts: 0, accuracy: 0 };
+                        const priorTotalQuestions = Number(previous.totalQuestions) || (Number(previous.attempts) || 0) * 10;
+                        const priorCorrectAnswers = Number(previous.correctAnswers)
+                            || Math.round(((Number(previous.accuracy) || 0) / 100) * priorTotalQuestions);
+                        const totalQuestions = priorTotalQuestions + group.total;
+                        const correctAnswers = priorCorrectAnswers + group.correct;
+                        record.userProgress[progressKey] = {
+                            exam: attempt.exam,
+                            subject: group.subject,
+                            topic: group.topic,
+                            level: previous.level || 'Beginner',
+                            bestScore: Math.max(Number(previous.bestScore) || 0, group.correct),
+                            attempts: (Number(previous.attempts) || 0) + 1,
+                            correctAnswers,
+                            totalQuestions,
+                            accuracy: Math.round((correctAnswers / totalQuestions) * 100)
+                        };
+                        topicBreakdown.push({
+                            subject: group.subject,
+                            topic: group.topic,
+                            correct: group.correct,
+                            total: group.total,
+                            accuracy: Math.round((group.correct / group.total) * 100)
+                        });
+                    }
+                } else {
+                    const progressKey = getProgressKey(attempt.exam, attempt.subject, attempt.topic);
+                    let previous = record.userProgress[progressKey];
+                    if (!previous) {
+                        previous = getLegacyTopicProgress(record.userProgress, record.exam, attempt.exam, attempt.subject, attempt.topic, SUBJECT_TOPICS);
+                        if (previous) delete record.userProgress[attempt.topic];
+                    }
+                    previous ||= { level: 'Beginner', bestScore: 0, attempts: 0, accuracy: 0 };
+                    const priorCount = Number(previous.attempts) || 0;
+                    const priorTotalQuestions = Number(previous.totalQuestions) || priorCount * result.total;
+                    const priorCorrectAnswers = Number(previous.correctAnswers)
+                        || Math.round(((Number(previous.accuracy) || 0) / 100) * priorTotalQuestions);
+                    const totalQuestions = priorTotalQuestions + result.total;
+                    const correctAnswers = priorCorrectAnswers + result.correct;
+                    record.userProgress[progressKey] = {
+                        exam: attempt.exam,
+                        subject: attempt.subject,
+                        topic: attempt.topic,
+                        level: isPassed ? nextLevel[attempt.difficulty] : previous.level,
+                        bestScore: Math.max(Number(previous.bestScore) || 0, result.correct),
+                        attempts: priorCount + 1,
+                        correctAnswers,
+                        totalQuestions,
+                        accuracy: totalQuestions ? Math.round((correctAnswers / totalQuestions) * 100) : 0
+                    };
                 }
-                previous ||= { level: 'Beginner', bestScore: 0, attempts: 0, accuracy: 0 };
-                const priorCount = Number(previous.attempts) || 0;
-                const priorTotalQuestions = Number(previous.totalQuestions) || priorCount * result.total;
-                const priorCorrectAnswers = Number(previous.correctAnswers)
-                    || Math.round(((Number(previous.accuracy) || 0) / 100) * priorTotalQuestions);
-                const totalQuestions = priorTotalQuestions + result.total;
-                const correctAnswers = priorCorrectAnswers + result.correct;
-                record.userProgress[progressKey] = {
-                    exam: attempt.exam,
-                    subject: attempt.subject,
-                    topic: attempt.topic,
-                    level: isPassed ? nextLevel[attempt.difficulty] : previous.level,
-                    bestScore: Math.max(Number(previous.bestScore) || 0, result.correct),
-                    attempts: priorCount + 1,
-                    correctAnswers,
-                    totalQuestions,
-                    accuracy: totalQuestions ? Math.round((correctAnswers / totalQuestions) * 100) : 0
-                };
                 const formattedTime = `${String(Math.floor(durationSeconds / 60)).padStart(2, '0')}:${String(durationSeconds % 60).padStart(2, '0')}`;
                 const completed = {
                     attemptId: attempt.attemptId,
@@ -443,15 +666,16 @@ export function createUserDataRouter({ dataStore, sessions, generateQuestionSet 
                     unanswered: result.unanswered,
                     percentage: result.percentage,
                     accuracy: result.accuracy,
-                    status: isPassed ? 'LEVEL PASSED' : 'PRACTICE REQUIRED',
+                    status: isMock ? 'MOCK TEST COMPLETED' : isPassed ? 'LEVEL PASSED' : 'PRACTICE REQUIRED',
                     date: submittedAt.toISOString().slice(0, 10),
                     submittedAt: submittedAt.toISOString(),
                     timeTaken: formattedTime,
+                    ...(isMock ? { mode: 'revision-mock', topicBreakdown } : {}),
                     questions: result.details
                 };
                 attempt.status = 'submitted';
                 attempt.submittedAt = completed.submittedAt;
-                attempt.answers = answerMap;
+                attempt.answers = submittedAnswers;
                 attempt.result = completed;
                 record.testHistory.unshift(completed);
                 responseResult = completed;

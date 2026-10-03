@@ -7,7 +7,7 @@ import {
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell
 } from 'recharts';
-import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, getDriveAuthUrl, loginDriveAdmin, logoutDriveAdmin, checkDriveConnection, uploadDriveFile, getDriveFileContentUrl, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, createTestAttempt, submitTestAttempt, saveTestAnswers, getTopicLearningVideos, getAdminLearningVideos, createAdminLearningVideo, updateAdminLearningVideo, deleteAdminLearningVideo } from './services/aiService.js';
+import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, getDriveAuthUrl, loginDriveAdmin, logoutDriveAdmin, checkDriveConnection, uploadDriveFile, getDriveFileContentUrl, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, createTestAttempt, createRevisionMockAttempt, submitTestAttempt, saveTestAnswers, getTopicLearningVideos, getAdminLearningVideos, createAdminLearningVideo, updateAdminLearningVideo, deleteAdminLearningVideo } from './services/aiService.js';
 import { normalizeAnswer } from './test-results.js';
 import { LEGACY_MEMBERS_STORAGE_KEY, readLegacyMembers, removeImportedLegacyMember } from './legacy-import.js';
 import { SUBJECT_TOPICS } from './syllabus.js';
@@ -273,6 +273,10 @@ export default function App() {
   const [isNotesAudioPlaying, setIsNotesAudioPlaying] = useState(false);
   const [activeAttemptId, setActiveAttemptId] = useState(null);
   const [completedAttempt, setCompletedAttempt] = useState(null);
+  const [activeTestMode, setActiveTestMode] = useState('topic');
+  const [activeTestDurationSeconds, setActiveTestDurationSeconds] = useState(600);
+  const [revisionMockQuestionCount, setRevisionMockQuestionCount] = useState(60);
+  const [revisionMockDurationMinutes, setRevisionMockDurationMinutes] = useState(60);
 
   useEffect(() => {
     const interval = setInterval(() => setCountdownNow(Date.now()), 60_000);
@@ -545,7 +549,7 @@ export default function App() {
       finalMinuteAlertsPlayedRef.current.clear();
       return;
     }
-    if (timeRemaining <= 300 && !halfTimeAlertPlayedRef.current) {
+    if (timeRemaining <= activeTestDurationSeconds / 2 && !halfTimeAlertPlayedRef.current) {
       halfTimeAlertPlayedRef.current = true;
       playExamTone(examAudioContextRef.current);
     }
@@ -553,7 +557,7 @@ export default function App() {
       finalMinuteAlertsPlayedRef.current.add(timeRemaining);
       playExamTone(examAudioContextRef.current, { frequency: 880, duration: 0.16, volume: 0.1 });
     }
-  }, [currentView, activeAttemptId, timeRemaining]);
+  }, [currentView, activeAttemptId, activeTestDurationSeconds, timeRemaining]);
 
   const clearAccountSpecificState = () => {
     setSelectedExam('SI');
@@ -716,10 +720,12 @@ export default function App() {
     setActiveAttemptId(activeAttempt?.attemptId || null);
     setCompletedAttempt(null);
     setActiveTestQuestions(activeAttempt?.questions || []);
+    setActiveTestMode(activeAttempt?.mode || 'topic');
+    setActiveTestDurationSeconds(Number(activeAttempt?.durationSeconds) || 600);
     setUserAnswers(activeAttempt?.answers || {});
     setCurrentQuestionIdx(0);
     const elapsed = activeAttempt?.startedAt ? Math.floor((Date.now() - Date.parse(activeAttempt.startedAt)) / 1000) : 0;
-    setTimeRemaining(Math.max(0, 600 - (Number.isFinite(elapsed) ? elapsed : 0)));
+    setTimeRemaining(Math.max(0, (Number(activeAttempt?.durationSeconds) || 600) - (Number.isFinite(elapsed) ? elapsed : 0)));
     setSelectedSubject(activeAttempt?.subject || Object.keys(SUBJECT_TOPICS)[0]);
     setSelectedTopic(activeAttempt?.topic || SUBJECT_TOPICS[Object.keys(SUBJECT_TOPICS)[0]]?.[0] || '');
     setActiveTestDifficulty(activeAttempt?.difficulty || 'Beginner');
@@ -883,6 +889,8 @@ export default function App() {
       setTestAttemptCounter((previous) => previous + 1);
       setActiveAttemptId(attempt.attemptId);
       setActiveTestQuestions(attempt.questions);
+      setActiveTestMode('topic');
+      setActiveTestDurationSeconds(600);
       setUserAnswers({});
       setCurrentQuestionIdx(0);
       setTimeRemaining(600); // 10 minutes
@@ -890,6 +898,53 @@ export default function App() {
     } catch (error) {
       setQuestionGenerationError(getSafeAiMessage(error, 'Question generation failed. Please try again.'));
       setQuestionGenerationNotice('AI question generation failed.');
+    } finally {
+      setIsGeneratingQuestions(false);
+    }
+  };
+
+  const handleStartRevisionMockTest = async () => {
+    if (isGeneratingQuestions) return;
+    if (!selectedExamProgress.length) {
+      setQuestionGenerationError('Practice at least one syllabus topic before starting a revision mock test.');
+      return;
+    }
+
+    initializeExamAudio(examAudioContextRef);
+    halfTimeAlertPlayedRef.current = false;
+    finalMinuteAlertsPlayedRef.current.clear();
+    setShowExamFocusWarning(false);
+    setIsGeneratingQuestions(true);
+    setQuestionGenerationError('');
+    setQuestionGenerationNotice('Preparing a weighted revision test from your practiced topics...');
+    setCompletedAttempt(null);
+    submissionInProgressRef.current = false;
+    setIsSubmittingTest(false);
+
+    try {
+      const { attempt } = await createRevisionMockAttempt({
+        exam: normalizeExamForRequest(selectedExam),
+        questionCount: revisionMockQuestionCount,
+        durationMinutes: revisionMockDurationMinutes
+      });
+      if (!attempt?.attemptId || attempt.mode !== 'revision-mock'
+        || !Array.isArray(attempt.questions) || attempt.questions.length !== revisionMockQuestionCount) {
+        throw new Error('The server returned an invalid revision test. Please try again.');
+      }
+
+      setTestAttemptCounter((previous) => previous + Math.ceil(revisionMockQuestionCount / 10));
+      setActiveAttemptId(attempt.attemptId);
+      setActiveTestQuestions(attempt.questions);
+      setActiveTestMode('revision-mock');
+      setActiveTestDurationSeconds(revisionMockDurationMinutes * 60);
+      setUserAnswers({});
+      setCurrentQuestionIdx(0);
+      setTimeRemaining(revisionMockDurationMinutes * 60);
+      setQuestionGenerationNotice('Revision mock test ready.');
+      setCurrentView('test');
+    } catch (error) {
+      setQuestionGenerationError(getSafeAiMessage(error, 'Revision mock generation failed. Please try again.'));
+      setQuestionGenerationNotice('Revision mock generation failed.');
     } finally {
       setIsGeneratingQuestions(false);
     }
@@ -1340,8 +1395,11 @@ export default function App() {
     let didSubmit = false;
 
     try {
-      if (activeTestQuestions.length !== 10) {
-        setQuestionGenerationError('This test does not contain exactly 10 questions and cannot be scored. Please generate a new test.');
+      const hasValidQuestionCount = activeTestMode === 'revision-mock'
+        ? [60, 90, 100, 150].includes(activeTestQuestions.length)
+        : activeTestQuestions.length === 10;
+      if (!hasValidQuestionCount) {
+        setQuestionGenerationError('This test question set is incomplete and cannot be scored. Please generate a new test.');
         setCurrentView('topic-detail');
         return;
       }
@@ -1401,8 +1459,8 @@ export default function App() {
     setAiModalContent('Asking the AI tutor to explain this evaluated answer...');
     void sendChatMessage({
       exam: normalizeExamForRequest(activeAttemptData?.exam || selectedExam),
-      subject: activeAttemptData?.subject || selectedSubject,
-      topic: activeAttemptData?.topic || selectedTopic,
+      subject: q.subject || activeAttemptData?.subject || selectedSubject,
+      topic: q.topic || activeAttemptData?.topic || selectedTopic,
       difficulty: activeAttemptData?.difficulty || activeTestDifficulty,
       messages: [{
         role: 'user',
@@ -1436,7 +1494,10 @@ export default function App() {
 
     try {
       const reply = await sendChatMessage({
-        exam: normalizeExamForRequest(selectedExam), subject: selectedSubject, topic: selectedTopic, difficulty: activeTestDifficulty || 'Beginner', messages: [
+        exam: normalizeExamForRequest(activeAttemptData?.exam || selectedExam),
+        subject: question.subject || activeAttemptData?.subject || selectedSubject,
+        topic: question.topic || activeAttemptData?.topic || selectedTopic,
+        difficulty: activeTestDifficulty || 'Beginner', messages: [
           { role: 'user', content: context },
           ...nextMessages.map((message) => ({ role: message.sender === 'user' ? 'user' : 'assistant', content: message.text }))
         ]
@@ -2051,6 +2112,18 @@ export default function App() {
                   <span>Syllabus Modules</span>
                 </h3>
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <button
+                    type="button"
+                    onClick={() => { setQuestionGenerationError(''); setQuestionGenerationNotice(''); setCurrentView('revision-mock'); }}
+                    className="rounded-xl border border-teal-500/30 bg-gradient-to-br from-teal-950/70 to-slate-800 p-4 text-left shadow-md transition hover:border-teal-400"
+                  >
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-white">All · Revision Mock Tests</span>
+                      <ChevronRight className="h-4 w-4 text-teal-300" />
+                    </div>
+                    <p className="mt-2 text-xs text-slate-300">Timed mixed-subject practice sampled from the topics you have already practiced.</p>
+                    <p className="mt-3 text-[11px] font-semibold text-teal-200">{selectedExamProgress.length} practiced topics available</p>
+                  </button>
                   {Object.keys(SUBJECT_TOPICS).map((subj) => {
                     const subjectMetric = subjectProgressSummary.find((item) => item.subject === subj) || {
                       accuracy: 0,
@@ -2468,6 +2541,59 @@ export default function App() {
           )}
 
           {/* TOPIC SELECTION VIEW */}
+          {currentView === 'revision-mock' && (
+            <div className="mx-auto max-w-4xl space-y-6">
+              <div className="flex items-center gap-3">
+                <button type="button" onClick={() => setCurrentView('dashboard')} aria-label="Back to dashboard" className="rounded-lg border border-slate-700 p-2 text-slate-300 hover:bg-slate-800">
+                  <ArrowLeft className="h-4 w-4" />
+                </button>
+                <div>
+                  <p className="text-xs font-bold uppercase tracking-[0.2em] text-teal-300">Syllabus Modules · All</p>
+                  <h2 className="text-2xl font-bold text-white">Revision & Mock Test</h2>
+                </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-700 bg-slate-800/80 p-5 shadow-lg">
+                <p className="text-sm leading-6 text-slate-300">
+                  Build a timed mixed-subject test from topics you have already practiced for <strong className="text-white">{selectedExam}</strong>.
+                  Each 10-question block focuses on a practiced topic. Blocks are prioritized by syllabus weightage and your lower-accuracy topics; results update progress separately for every topic tested.
+                </p>
+                <div className="mt-5 grid grid-cols-1 gap-4 sm:grid-cols-2">
+                  <label className="text-xs font-semibold text-slate-300">
+                    Number of questions
+                    <select value={revisionMockQuestionCount} onChange={(event) => setRevisionMockQuestionCount(Number(event.target.value))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white">
+                      {[60, 90, 100, 150].map((count) => <option key={count} value={count}>{count} questions</option>)}
+                    </select>
+                  </label>
+                  <label className="text-xs font-semibold text-slate-300">
+                    Test duration
+                    <select value={revisionMockDurationMinutes} onChange={(event) => setRevisionMockDurationMinutes(Number(event.target.value))} className="mt-1 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 py-2.5 text-sm text-white">
+                      {[60, 90, 120].map((minutes) => <option key={minutes} value={minutes}>{minutes} minutes</option>)}
+                    </select>
+                  </label>
+                </div>
+                <div className="mt-4 rounded-xl border border-blue-500/20 bg-blue-500/5 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <p className="text-sm font-bold text-white">Your {selectedExam} revision pool</p>
+                    <span className="rounded-full bg-teal-500/10 px-2.5 py-1 text-[11px] font-bold text-teal-200">{selectedExamProgress.length} practiced topics</span>
+                  </div>
+                  {selectedExamProgress.length ? (
+                    <p className="mt-2 text-xs leading-5 text-slate-400">
+                      This mock has up to {Math.ceil(revisionMockQuestionCount / 10)} topic sections drawn from your practiced pool. If your pool is larger, later mocks rotate to other topics; if it is smaller, the test revisits topics. Topic selection prioritizes exam weightage and revision needs.
+                    </p>
+                  ) : (
+                    <p className="mt-2 text-xs text-amber-200">Complete at least one topic test first; the mock test only includes topics you have practiced.</p>
+                  )}
+                </div>
+                {questionGenerationError && <p role="alert" className="mt-4 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{questionGenerationError}</p>}
+                {questionGenerationNotice && <p role="status" className="mt-4 rounded-lg border border-teal-500/20 bg-teal-500/5 px-3 py-2 text-xs text-teal-200">{questionGenerationNotice}</p>}
+                <button type="button" onClick={() => void handleStartRevisionMockTest()} disabled={!selectedExamProgress.length || isGeneratingQuestions} className="mt-5 w-full rounded-xl bg-teal-600 px-4 py-3 text-sm font-bold text-white shadow transition hover:bg-teal-500 disabled:cursor-not-allowed disabled:opacity-50">
+                  {isGeneratingQuestions ? 'Generating your mixed-topic questions…' : `Start ${revisionMockQuestionCount}-Question Mock Test`}
+                </button>
+              </div>
+            </div>
+          )}
+
           {(currentView === 'topics' || currentView === 'topic-detail') && (
             <div className="max-w-5xl mx-auto space-y-6">
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-slate-800 pb-4">
@@ -2962,10 +3088,10 @@ export default function App() {
               <div className="bg-slate-800 border border-slate-700 rounded-xl p-4 flex flex-col sm:flex-row justify-between items-center gap-3 shadow-lg">
                 <div>
                   <div className="flex items-center space-x-2 text-xs text-slate-400">
-                    <span>{selectedExam}</span> • <span>{selectedSubject}</span> • <span className="text-blue-400 font-semibold">{activeTestDifficulty} Level</span>
+                    <span>{selectedExam}</span> • <span>{activeTestMode === 'revision-mock' ? 'All subjects' : selectedSubject}</span> • <span className="text-blue-400 font-semibold">{activeTestMode === 'revision-mock' ? `${activeTestDurationSeconds / 60} min mock` : `${activeTestDifficulty} Level`}</span>
                   </div>
                   <h3 className="text-lg font-bold text-white flex items-center space-x-2">
-                    <span>{selectedTopic}</span>
+                    <span>{activeTestMode === 'revision-mock' ? 'Revision Mock Test' : selectedTopic}</span>
                     <span className="text-[10px] bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded-md font-bold">
                       ✨ Attempt Seed #{testAttemptCounter}
                     </span>
@@ -3094,8 +3220,8 @@ export default function App() {
               <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl space-y-6">
                 <div className="flex justify-between items-center border-b border-slate-700 pb-4">
                   <div>
-                    <span className="text-xs text-blue-400 font-semibold">{activeAttemptData.topic} • {activeAttemptData.difficulty}</span>
-                    <h2 className="text-2xl font-extrabold text-white">Test Results</h2>
+                    <span className="text-xs text-blue-400 font-semibold">{activeAttemptData.mode === 'revision-mock' ? `${activeAttemptData.total} questions · All subjects` : `${activeAttemptData.topic} • ${activeAttemptData.difficulty}`}</span>
+                    <h2 className="text-2xl font-extrabold text-white">{activeAttemptData.mode === 'revision-mock' ? 'Revision Mock Results' : 'Test Results'}</h2>
                   </div>
                   <span className={`px-4 py-1.5 rounded-full text-xs font-black uppercase tracking-wider ${activeAttemptData.status === 'LEVEL PASSED' ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/40' : 'bg-amber-500/20 text-amber-400 border border-amber-500/40'
                     }`}>
@@ -3134,6 +3260,20 @@ export default function App() {
                   </div>
                 </div>
 
+                {activeAttemptData.topicBreakdown?.length > 0 && (
+                  <section className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
+                    <h3 className="text-sm font-bold text-white">Topic performance</h3>
+                    <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                      {activeAttemptData.topicBreakdown.map((item) => (
+                        <div key={`${item.subject}:${item.topic}`} className="flex items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-800 px-3 py-2">
+                          <span className="min-w-0 truncate text-xs text-slate-200">{item.subject} · {item.topic}</span>
+                          <span className="shrink-0 text-xs font-bold text-teal-200">{item.correct}/{item.total} · {item.accuracy}%</span>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
                 <div className="rounded-xl border border-slate-700 bg-slate-900/70 p-4">
                   <h3 className="text-sm font-bold text-white">Answer Key</h3>
                   <div className="mt-3 grid grid-cols-2 sm:grid-cols-5 gap-2 text-xs">
@@ -3146,7 +3286,17 @@ export default function App() {
                 </div>
 
                 <div className="flex flex-col sm:flex-row gap-3">
-                  <button
+                  {activeAttemptData.mode === 'revision-mock' ? (
+                    <button
+                      disabled={isGeneratingQuestions}
+                      onClick={() => { setQuestionGenerationError(''); void handleStartRevisionMockTest(); }}
+                      aria-busy={isGeneratingQuestions}
+                      className="flex-1 py-3 bg-teal-600 hover:bg-teal-500 text-white font-bold text-xs rounded-xl shadow transition disabled:cursor-wait disabled:opacity-60"
+                    >
+                      {isGeneratingQuestions ? 'Preparing New Mock...' : 'Take Another Revision Mock'}
+                    </button>
+                  ) : (
+                    <button
                     disabled={isGeneratingQuestions}
                     onClick={() => handleStartTest(selectedTopic, activeTestDifficulty)}
                     aria-busy={isGeneratingQuestions}
@@ -3154,7 +3304,8 @@ export default function App() {
                   >
                     <RotateCcw className="w-4 h-4" />
                     <span>{isGeneratingQuestions ? 'Preparing Reattempt...' : 'Attempt Again (New AI Questions)'}</span>
-                  </button>
+                    </button>
+                  )}
                   <button
                     onClick={() => setCurrentView('topics')}
                     className="flex-1 py-3 bg-slate-700 hover:bg-slate-600 text-slate-200 font-bold text-xs rounded-xl transition"
