@@ -4035,6 +4035,9 @@ export default function App() {
                     <p className="mt-2 max-w-2xl text-sm leading-6 text-slate-300">
                       Beepali Srikanth builds tools to help Telangana Police SI and Constable candidates prepare with AI-powered practice, personalized study schedules, and topic-wise revision.
                     </p>
+                    <p className="mt-3 inline-flex rounded-full border border-indigo-400/30 bg-indigo-500/10 px-3 py-1.5 text-xs font-semibold text-indigo-200">
+                      This website is part of sriXplore.
+                    </p>
                   </div>
                   <a
                     href="https://my-portfolio-v0ez.onrender.com/"
