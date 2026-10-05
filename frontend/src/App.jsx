@@ -289,6 +289,21 @@ export default function App() {
   const [highContrast, setHighContrast] = useState(() => {
     try { return localStorage.getItem('prep-high-contrast') === 'true'; } catch { return false; }
   });
+  const THEME_OPTIONS = [
+    { id: 'midnight', label: 'Midnight', swatch: '#0f172a' },
+    { id: 'ocean', label: 'Ocean', swatch: '#0f766e' },
+    { id: 'sunset', label: 'Sunset', swatch: '#f97316' },
+    { id: 'forest', label: 'Forest', swatch: '#16a34a' },
+    { id: 'violet', label: 'Violet', swatch: '#8b5cf6' },
+    { id: 'rose', label: 'Rose', swatch: '#f43f5e' },
+    { id: 'aurora', label: 'Aurora', swatch: '#22c55e' },
+    { id: 'gold', label: 'Gold', swatch: '#fbbf24' },
+    { id: 'monochrome', label: 'Monochrome', swatch: '#94a3b8' },
+    { id: 'cyber', label: 'Cyber', swatch: '#06b6d4' }
+  ];
+  const [activeTheme, setActiveTheme] = useState(() => {
+    try { return localStorage.getItem('prep-theme') || 'midnight'; } catch { return 'midnight'; }
+  });
 
   useEffect(() => {
     const interval = setInterval(() => setCountdownNow(Date.now()), 60_000);
@@ -298,17 +313,20 @@ export default function App() {
   useEffect(() => {
     document.documentElement.style.fontSize = ['16px', '18px', '20px'].includes(textScale) ? textScale : '16px';
     document.documentElement.dataset.highContrast = String(highContrast);
+    document.documentElement.dataset.theme = activeTheme;
     try {
       localStorage.setItem('prep-text-scale', textScale);
       localStorage.setItem('prep-high-contrast', String(highContrast));
+      localStorage.setItem('prep-theme', activeTheme);
     } catch (error) {
-      console.warn('Accessibility preferences could not be saved in this browser.', error);
+      console.warn('Accessibility and theme preferences could not be saved in this browser.', error);
     }
     return () => {
       delete document.documentElement.dataset.highContrast;
       document.documentElement.style.fontSize = '';
+      document.documentElement.dataset.theme = 'midnight';
     };
-  }, [textScale, highContrast]);
+  }, [textScale, highContrast, activeTheme]);
 
   useEffect(() => {
     const members = readLegacyMembers();
@@ -4246,6 +4264,32 @@ export default function App() {
                     High contrast
                   </label>
                 </div>
+
+                <div className="mt-5 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">Theme</span>
+                    <span className="text-[10px] text-slate-500">{THEME_OPTIONS.find((option) => option.id === activeTheme)?.label || 'Midnight'}</span>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {THEME_OPTIONS.map((option) => {
+                      const selected = option.id === activeTheme;
+                      return (
+                        <button
+                          key={option.id}
+                          type="button"
+                          aria-label={`Select ${option.label} theme`}
+                          aria-pressed={selected}
+                          onClick={() => setActiveTheme(option.id)}
+                          className={`relative flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${selected ? 'border-white/70 bg-white/10 text-white shadow-lg' : 'border-slate-600 bg-slate-900/70 text-slate-300 hover:border-slate-500 hover:text-white'}`}
+                        >
+                          <span className="block h-3.5 w-3.5 rounded-full border border-white/30" style={{ background: option.swatch }} />
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
                 <p className="mt-3 text-xs text-slate-400">Display preferences stay in this browser. Telugu explanations are available beside reviewed questions.</p>
               </section>
 
