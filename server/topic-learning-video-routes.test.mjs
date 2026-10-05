@@ -120,6 +120,21 @@ test('different signed-in candidates can update and delete shared videos', async
     assert.equal((await deleted.json()).success, true);
 });
 
+test('signed-in candidates can add a video using only its YouTube URL', async (context) => {
+    const { baseUrl, cookies, videoStore } = await createServer(context);
+    const response = await fetch(`${baseUrl}/api/admin/learning-videos`, {
+        method: 'POST',
+        headers: candidateHeaders(cookies.si, baseUrl),
+        body: JSON.stringify({ exam: 'SI', subject: 'Arithmetic', topic: 'Percentages', youtubeUrl: VIDEO_URL })
+    });
+
+    assert.equal(response.status, 201);
+    const { video } = await response.json();
+    assert.equal(video.title, 'Percentages video');
+    assert.equal(video.videoId, VIDEO_ID);
+    assert.equal(videoStore.records.length, 1);
+});
+
 test('learning video migration enforces role, ordering, maximum count, and server-only access', async () => {
     const migration = await readFile(new URL('../supabase/migrations/202610010001_topic_learning_videos.sql', import.meta.url), 'utf8');
     assert.match(migration, /check\s*\(exam_type in \('SI', 'CONSTABLE'\)\)/i);

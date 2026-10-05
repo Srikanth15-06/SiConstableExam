@@ -44,10 +44,11 @@ function parseVideoInput(body) {
     const examType = String(body?.exam || body?.examType || '').trim().toUpperCase();
     const subject = String(body?.subject || '').trim();
     const topic = String(body?.topic || '').trim();
-    const title = typeof body?.title === 'string' ? body.title.normalize('NFKC').trim() : '';
+    const requestedTitle = typeof body?.title === 'string' ? body.title.normalize('NFKC').trim() : '';
+    const title = requestedTitle || `${topic} video`;
     const youtube = parseYouTubeUrl(body?.youtubeUrl || body?.youtube_url);
 
-    if (!EXAMS.has(examType) || !validTopic(subject, topic) || !title || title.length > 120 || !youtube) return null;
+    if (!EXAMS.has(examType) || !validTopic(subject, topic) || title.length > 120 || !youtube) return null;
     return { examType, subject, topic, title, ...youtube };
 }
 
@@ -131,7 +132,7 @@ export function createTopicLearningVideoRouter({ dataStore, videoStore, sessions
     router.post('/admin/learning-videos', authenticate, requireTrustedOrigin, rateLimiter, async (req, res) => {
         const input = parseVideoInput(req.body);
         if (!input) {
-            sendFailure(res, 400, 'INVALID_LEARNING_VIDEO', 'Enter a valid topic, video title, and YouTube URL.');
+            sendFailure(res, 400, 'INVALID_LEARNING_VIDEO', 'Enter a valid topic and YouTube URL.');
             return;
         }
         try {
