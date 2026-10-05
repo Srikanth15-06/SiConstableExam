@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useEffectEvent, useRef } from 'react';
+import YouTubeVideoPlayer from './YouTubeVideoPlayer.jsx';
 import {
   BookOpen, Folder, Download, FileText, Target, Clock, ChevronRight, BarChart2, User, Sparkles,
   ArrowLeft, Send, ShieldAlert, Play, X, Maximize2, Minimize2, Brain, Lock, Unlock, RotateCcw, Code, LogOut, Mail, KeyRound, UserPlus, RefreshCw,
@@ -260,6 +261,7 @@ export default function App() {
   const [selectedTopic, setSelectedTopic] = useState(SUBJECT_TOPICS[Object.keys(SUBJECT_TOPICS)[0]]?.[0] || '');
   const [showStudyNotes, setShowStudyNotes] = useState(false);
   const [learningVideos, setLearningVideos] = useState([]);
+  const [activeTopicVideo, setActiveTopicVideo] = useState(null);
   const [isLoadingLearningVideos, setIsLoadingLearningVideos] = useState(false);
   const [learningVideosError, setLearningVideosError] = useState('');
   const [studyNotes, setStudyNotes] = useState(null);
@@ -393,6 +395,7 @@ export default function App() {
     return { exam: 'SI', subject, topic: SUBJECT_TOPICS[subject]?.[0] || '' };
   });
   const [adminLearningVideos, setAdminLearningVideos] = useState([]);
+  const [activeLibraryVideo, setActiveLibraryVideo] = useState(null);
   const [isLoadingAdminVideos, setIsLoadingAdminVideos] = useState(false);
   const [adminVideoError, setAdminVideoError] = useState('');
   const [adminVideoNotice, setAdminVideoNotice] = useState('');
@@ -1312,7 +1315,10 @@ export default function App() {
     setAdminVideoError('');
     setAdminVideoNotice('');
     try {
-      const input = { title: adminVideoForm.title, youtubeUrl: adminVideoForm.youtubeUrl };
+      const input = {
+        title: adminVideoForm.title.trim() || `${adminVideoContext.topic} video`,
+        youtubeUrl: adminVideoForm.youtubeUrl
+      };
       const response = adminVideoForm.id
         ? await updateAdminLearningVideo(adminVideoForm.id, input)
         : await createAdminLearningVideo({ ...adminVideoContext, ...input });
@@ -1324,6 +1330,7 @@ export default function App() {
       });
       setAdminVideoNotice(adminVideoForm.id ? 'Video updated successfully.' : 'Video added successfully.');
       setAdminVideoForm({ id: '', title: '', youtubeUrl: '' });
+      setActiveLibraryVideo(response.video);
     } catch (error) {
       setAdminVideoError(error.code === 'TOPIC_VIDEO_LIMIT'
         ? 'Maximum 5 learning videos allowed for this topic.'
@@ -1341,6 +1348,7 @@ export default function App() {
     try {
       await deleteAdminLearningVideo(adminVideoDeleteId);
       setAdminLearningVideos((previous) => previous.filter((video) => video.id !== adminVideoDeleteId));
+      setActiveLibraryVideo((video) => video?.id === adminVideoDeleteId ? null : video);
       setAdminVideoDeleteId('');
       setAdminVideoNotice('Video deleted successfully.');
     } catch {
@@ -2966,14 +2974,17 @@ export default function App() {
                             />
                             <div className="flex items-center justify-between gap-3 p-3">
                               <h4 className="min-w-0 text-sm font-semibold text-slate-100">{video.title}</h4>
-                              <a href={video.youtubeUrl} target="_blank" rel="noopener noreferrer" className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-teal-700 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-600">
+                              <button type="button" onClick={() => setActiveTopicVideo(video)} className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-teal-700 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-600">
                                 <Play className="h-3.5 w-3.5" />
-                                Watch Video
-                              </a>
+                                Play here
+                              </button>
                             </div>
                           </article>
                         ))}
                       </div>
+                    )}
+                    {activeTopicVideo && learningVideos.some((video) => video.id === activeTopicVideo.id) && (
+                      <YouTubeVideoPlayer video={activeTopicVideo} onClose={() => setActiveTopicVideo(null)} />
                     )}
                   </section>
 
@@ -3711,11 +3722,11 @@ export default function App() {
               </div>
 
               {currentMember && (
-                <section aria-label="Topic learning video administration" className="space-y-4 border-b border-slate-800 pb-5">
+                <section aria-label="Shared topic learning videos" className="space-y-4 border-b border-slate-800 pb-5">
                   <div className="flex items-center justify-between gap-3">
                     <div>
-                      <h3 className="text-sm font-bold text-slate-100">Topic Learning Videos</h3>
-                      <p className="mt-1 text-xs text-slate-400">Manage the curated YouTube resources shown to candidates.</p>
+                      <h3 className="text-sm font-bold text-slate-100">Shared Topic Learning Videos</h3>
+                      <p className="mt-1 text-xs text-slate-400">Add a YouTube link for this topic. Saved videos are shared with candidates preparing for the same exam.</p>
                     </div>
                   </div>
 
@@ -3723,20 +3734,20 @@ export default function App() {
                     <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                       <label className="text-xs font-semibold text-slate-300">
                         Exam role
-                        <select value={adminVideoContext.exam} onChange={(event) => { setIsLoadingAdminVideos(true); setAdminLearningVideos([]); setAdminVideoContext((previous) => ({ ...previous, exam: event.target.value })); setAdminVideoForm({ id: '', title: '', youtubeUrl: '' }); setAdminVideoDeleteId(''); setAdminVideoNotice(''); setAdminVideoError(''); }} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+                        <select value={adminVideoContext.exam} onChange={(event) => { setIsLoadingAdminVideos(true); setAdminLearningVideos([]); setActiveLibraryVideo(null); setAdminVideoContext((previous) => ({ ...previous, exam: event.target.value })); setAdminVideoForm({ id: '', title: '', youtubeUrl: '' }); setAdminVideoDeleteId(''); setAdminVideoNotice(''); setAdminVideoError(''); }} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
                           <option value="SI">SI</option>
                           <option value="CONSTABLE">Constable</option>
                         </select>
                       </label>
                       <label className="text-xs font-semibold text-slate-300">
                         Subject
-                        <select value={adminVideoContext.subject} onChange={(event) => { const subject = event.target.value; setIsLoadingAdminVideos(true); setAdminLearningVideos([]); setAdminVideoContext((previous) => ({ ...previous, subject, topic: SUBJECT_TOPICS[subject]?.[0] || '' })); setAdminVideoForm({ id: '', title: '', youtubeUrl: '' }); setAdminVideoDeleteId(''); setAdminVideoNotice(''); setAdminVideoError(''); }} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+                        <select value={adminVideoContext.subject} onChange={(event) => { const subject = event.target.value; setIsLoadingAdminVideos(true); setAdminLearningVideos([]); setActiveLibraryVideo(null); setAdminVideoContext((previous) => ({ ...previous, subject, topic: SUBJECT_TOPICS[subject]?.[0] || '' })); setAdminVideoForm({ id: '', title: '', youtubeUrl: '' }); setAdminVideoDeleteId(''); setAdminVideoNotice(''); setAdminVideoError(''); }} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
                           {Object.keys(SUBJECT_TOPICS).map((subject) => <option key={subject} value={subject}>{subject}</option>)}
                         </select>
                       </label>
                       <label className="text-xs font-semibold text-slate-300">
                         Topic
-                        <select value={adminVideoContext.topic} onChange={(event) => { setIsLoadingAdminVideos(true); setAdminLearningVideos([]); setAdminVideoContext((previous) => ({ ...previous, topic: event.target.value })); setAdminVideoForm({ id: '', title: '', youtubeUrl: '' }); setAdminVideoDeleteId(''); setAdminVideoNotice(''); setAdminVideoError(''); }} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
+                        <select value={adminVideoContext.topic} onChange={(event) => { setIsLoadingAdminVideos(true); setAdminLearningVideos([]); setActiveLibraryVideo(null); setAdminVideoContext((previous) => ({ ...previous, topic: event.target.value })); setAdminVideoForm({ id: '', title: '', youtubeUrl: '' }); setAdminVideoDeleteId(''); setAdminVideoNotice(''); setAdminVideoError(''); }} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white">
                           {(SUBJECT_TOPICS[adminVideoContext.subject] || []).map((topic) => <option key={topic} value={topic}>{topic}</option>)}
                         </select>
                       </label>
@@ -3753,9 +3764,10 @@ export default function App() {
                           <li key={video.id} className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center sm:justify-between">
                             <div className="min-w-0">
                               <p className="text-xs font-bold text-slate-300">{index + 1}. {video.title}</p>
-                              <a href={video.youtubeUrl} target="_blank" rel="noopener noreferrer" className="mt-1 block truncate text-[11px] text-teal-300 hover:text-teal-200">{video.youtubeUrl}</a>
+                              <p className="mt-1 truncate text-[11px] text-slate-500">{video.youtubeUrl}</p>
                             </div>
                             <div className="flex shrink-0 gap-2">
+                              <button type="button" onClick={() => setActiveLibraryVideo(video)} aria-label={`Play ${video.title} here`} className="inline-flex items-center gap-1.5 rounded-md border border-teal-500/40 px-2.5 py-1.5 text-xs font-semibold text-teal-100 hover:bg-teal-500/10"><Play className="h-3.5 w-3.5" />Play here</button>
                               <button type="button" onClick={() => { setAdminVideoForm({ id: video.id, title: video.title, youtubeUrl: video.youtubeUrl }); setAdminVideoError(''); setAdminVideoNotice(''); }} aria-label={`Edit ${video.title}`} title="Edit video" className="rounded-md border border-slate-700 p-2 text-slate-300 hover:bg-slate-800"><Pencil className="h-4 w-4" /></button>
                               <button type="button" onClick={() => { setAdminVideoDeleteId(video.id); setAdminVideoError(''); setAdminVideoNotice(''); }} aria-label={`Delete ${video.title}`} title="Delete video" className="rounded-md border border-rose-500/30 p-2 text-rose-200 hover:bg-rose-500/10"><Trash2 className="h-4 w-4" /></button>
                             </div>
@@ -3763,6 +3775,10 @@ export default function App() {
                         ))}
                         {!adminLearningVideos.length && !isLoadingAdminVideos && <li className="p-3 text-xs text-slate-500">No learning videos added yet.</li>}
                       </ol>
+                    )}
+
+                    {activeLibraryVideo && adminLearningVideos.some((video) => video.id === activeLibraryVideo.id) && (
+                      <YouTubeVideoPlayer video={activeLibraryVideo} onClose={() => setActiveLibraryVideo(null)} />
                     )}
 
                     {adminVideoDeleteId && (
@@ -3777,8 +3793,8 @@ export default function App() {
 
                     <form onSubmit={handleSaveAdminVideo} className="grid grid-cols-1 gap-3 sm:grid-cols-[1fr_1.4fr_auto] sm:items-end">
                       <label className="text-xs font-semibold text-slate-300">
-                        Video Title
-                        <input value={adminVideoForm.title} onChange={(event) => setAdminVideoForm((previous) => ({ ...previous, title: event.target.value }))} required maxLength={120} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" placeholder="Percentages Basics" />
+                        Video Title {adminVideoForm.id ? '' : '(optional)'}
+                        <input value={adminVideoForm.title} onChange={(event) => setAdminVideoForm((previous) => ({ ...previous, title: event.target.value }))} maxLength={120} className="mt-1 w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" placeholder="Percentages Basics" />
                       </label>
                       <label className="text-xs font-semibold text-slate-300">
                         YouTube URL
