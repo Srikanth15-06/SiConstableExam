@@ -10,7 +10,7 @@ test('mistake notebook scopes to selected exam and includes incorrect and unansw
         {
             exam: 'SI', attemptId: 'attempt-1', date: '2026-10-03', subject: 'Arithmetic', topic: 'Percentages', difficulty: 'Beginner',
             questions: [
-                { id: 'q1', question: 'Wrong answer', status: 'INCORRECT', userAnswer: '5', correctAnswer: '4' },
+                { id: 'q1', question: 'Wrong answer', status: 'INCORRECT', userAnswer: '5', correctAnswer: '4', explanation: 'Subtract the smaller value from the larger one.' },
                 { id: 'q2', question: 'Skipped', status: 'UNANSWERED', userAnswer: '', correctAnswer: 'B' },
                 { id: 'q3', question: 'Correct', status: 'CORRECT', userAnswer: 'A', correctAnswer: 'A' }
             ]
@@ -21,6 +21,7 @@ test('mistake notebook scopes to selected exam and includes incorrect and unansw
     assert.deepEqual(notebook.map((item) => item.id), ['q1', 'q2']);
     assert.deepEqual(notebook.map((item) => item.answerStatus), ['Incorrect', 'Unanswered']);
     assert.equal(notebook[0].topic, 'Percentages');
+    assert.equal(notebook[0].explanation, 'Subtract the smaller value from the larger one.');
 });
 
 test('spaced revision intervals adapt to the latest per-topic accuracy and due date', () => {

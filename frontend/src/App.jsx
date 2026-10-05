@@ -1801,10 +1801,33 @@ export default function App() {
   };
 
   const handlePracticeTopic = (subject, topic) => {
-    setSelectedSubject(subject);
+    const matchingSubjects = Object.keys(SUBJECT_TOPICS)
+      .filter((candidate) => SUBJECT_TOPICS[candidate]?.includes(topic));
+    const resolvedSubject = matchingSubjects.includes(subject)
+      ? subject
+      : matchingSubjects.length === 1 ? matchingSubjects[0] : '';
+    if (!resolvedSubject) {
+      setQuestionGenerationError(matchingSubjects.length > 1
+        ? 'This topic is listed under multiple subjects. Choose the correct subject above, then select the topic to continue.'
+        : 'This topic could not be found in the syllabus. Choose a subject above and select an available topic.');
+      setCurrentView('topics');
+      return;
+    }
+
+    setSelectedSubject(resolvedSubject);
     setSelectedTopic(topic);
     setQuestionGenerationError('');
-    setCurrentView('topics');
+    setLearningVideos([]);
+    setLearningVideosError('');
+    setIsLoadingLearningVideos(true);
+    setStudyNotes(null);
+    setSelectedNotesLearningStage('');
+    setStudyNotesError('');
+    setShowStudyNotes(false);
+    setNotesDoubtMessages([]);
+    setNotesDoubtInput('');
+    setNotesDoubtError('');
+    setCurrentView('topic-detail');
   };
 
   const handleExplainInTelugu = (question) => {
@@ -4166,18 +4189,18 @@ export default function App() {
                   <span className="rounded-full bg-rose-500/10 px-3 py-1 text-xs font-bold text-rose-200">{mistakeNotebook.length} items</span>
                 </div>
                 {mistakeNotebook.length ? (
-                  <div className="mt-4 space-y-2">
-                    {mistakeNotebook.slice(0, 15).map((item, index) => (
+                  <div aria-label="Mistake notebook entries" className="mt-4 max-h-[32rem] space-y-2 overflow-y-auto overscroll-contain pr-2" role="region" tabIndex={0}>
+                    {mistakeNotebook.map((item, index) => (
                       <div key={`${item.attemptId}:${item.id || index}`} className="flex flex-col gap-2 rounded-xl border border-slate-700 bg-slate-900/60 p-3 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0">
                           <p className="text-xs font-semibold leading-5 text-slate-100">{item.question || 'Question details unavailable'}</p>
                           <p className="mt-1 text-[11px] text-slate-400">{item.subject} · {item.topic} · {item.answerStatus} · {item.date}</p>
                           <p className="mt-1 text-[11px] text-emerald-200">Correct answer: {item.correctAnswer || 'Not recorded'}</p>
+                          <p className="mt-2 text-xs leading-5 text-slate-300"><span className="font-bold text-blue-300">Explanation:</span> {item.explanation || 'Explanation not recorded for this question.'}</p>
                         </div>
-                        {item.topic && <button type="button" onClick={() => handlePracticeTopic(item.subject || selectedSubject, item.topic)} className="shrink-0 rounded-lg border border-rose-400/30 px-2.5 py-1.5 text-[10px] font-bold text-rose-100 hover:bg-rose-500/10">Practice topic</button>}
+                        {item.topic && <button type="button" onClick={() => handlePracticeTopic(item.subject, item.topic)} className="shrink-0 rounded-lg border border-rose-400/30 px-2.5 py-1.5 text-[10px] font-bold text-rose-100 hover:bg-rose-500/10">Practice now</button>}
                       </div>
                     ))}
-                    {mistakeNotebook.length > 15 && <p className="pt-1 text-xs text-slate-400">Showing the latest 15 of {mistakeNotebook.length} notebook entries.</p>}
                   </div>
                 ) : <p className="mt-4 text-sm text-slate-400">Incorrect and unanswered questions from your completed tests will appear here.</p>}
               </section>
