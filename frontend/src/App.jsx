@@ -4265,6 +4265,28 @@ export default function App() {
                     </dl>
                   </div>
                 </div>
+
+                <div className="mt-5 border-t border-slate-700 pt-4">
+                  <h4 className="text-sm font-bold text-white">Which AI handles each feature?</h4>
+                  <p className="mt-1 text-xs text-slate-400">Features use providers in this order. If one cannot complete the request, the next provider is tried.</p>
+                  <dl className="mt-3 grid gap-3 md:grid-cols-3">
+                    <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+                      <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">Practice test questions</dt>
+                      <dd className="mt-2 text-sm font-bold text-white">Gemini <span className="font-normal text-slate-400">→</span> Groq <span className="font-normal text-slate-400">→</span> OpenRouter</dd>
+                      <p className="mt-1 text-xs text-slate-500">Creates topic-specific test questions.</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+                      <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">Topic study notes</dt>
+                      <dd className="mt-2 text-sm font-bold text-white">Groq <span className="font-normal text-slate-400">→</span> OpenRouter <span className="font-normal text-slate-400">→</span> Gemini</dd>
+                      <p className="mt-1 text-xs text-slate-500">Creates explanations, examples, formulas, and revision tips.</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+                      <dt className="text-xs font-semibold uppercase tracking-wider text-slate-400">AI Exam Guru and study schedule</dt>
+                      <dd className="mt-2 text-sm font-bold text-white">OpenRouter <span className="font-normal text-slate-400">→</span> Groq <span className="font-normal text-slate-400">→</span> Gemini</dd>
+                      <p className="mt-1 text-xs text-slate-500">Answers study questions and prioritizes topics for your schedule.</p>
+                    </div>
+                  </dl>
+                </div>
               </section>
 
               <section aria-label="Progress report tools" className="rounded-2xl border border-slate-700 bg-slate-800/80 p-5 shadow-xl print:hidden">
