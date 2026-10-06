@@ -103,7 +103,11 @@ export function createAuthenticationMiddleware(sessions) {
 
 function setSessionCookie(res, sessionId, expiresAt, secure) {
     const maxAge = Math.max(0, Math.floor((expiresAt - Date.now()) / 1000));
-    res.setHeader('Set-Cookie', `${AUTH_COOKIE_NAME}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`);
+    if (secure) {
+        res.setHeader('Set-Cookie', `${AUTH_COOKIE_NAME}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=${maxAge}`);
+        return;
+    }
+    res.setHeader('Set-Cookie', `${AUTH_COOKIE_NAME}=${encodeURIComponent(sessionId)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`);
 }
 
 function hasMeaningfulUserData(data) {
@@ -126,7 +130,11 @@ function legacyImportFailure(res, status, code, message) {
 }
 
 function clearSessionCookie(res, secure) {
-    res.setHeader('Set-Cookie', `${AUTH_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure ? '; Secure' : ''}`);
+    if (secure) {
+        res.setHeader('Set-Cookie', `${AUTH_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=None; Secure; Max-Age=0`);
+        return;
+    }
+    res.setHeader('Set-Cookie', `${AUTH_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
 export function createAuthenticationRouter({ dataStore, sessions, allowedOrigins = new Set(), rateLimiters = {}, secureCookies = false }) {

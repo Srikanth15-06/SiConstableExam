@@ -468,17 +468,23 @@ export async function getAiStatus() {
         gemini: {
             available: gemini.apiKeys.length > 0 && gemini.models.length > 0,
             configuredKeys: gemini.keysConfigured,
-            configuredModels: gemini.modelsConfigured
+            configuredModels: gemini.modelsConfigured,
+            activeKeyNumber: gemini.activeKeyNumber,
+            activeModel: gemini.activeModel
         },
         groq: {
             available: groq.apiKeys.length > 0 && groq.models.length > 0,
             configuredKeys: groq.keysConfigured,
-            configuredModels: groq.modelsConfigured
+            configuredModels: groq.modelsConfigured,
+            activeKeyNumber: groq.activeKeyNumber,
+            activeModel: groq.activeModel
         },
         openrouter: {
             available: openrouter.apiKeys.length > 0 && openrouter.models.length > 0,
             configuredKeys: openrouter.keysConfigured,
-            configuredModels: openrouter.modelsConfigured
+            configuredModels: openrouter.modelsConfigured,
+            activeKeyNumber: openrouter.activeKeyNumber,
+            activeModel: openrouter.activeModel
         },
         googleDrive: {
             configured: drive.configured,

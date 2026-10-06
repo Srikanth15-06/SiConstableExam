@@ -48,27 +48,51 @@ export function getProviderConfig(providerName) {
     while (index <= 20) {
         const key = process.env[`${providerKey}_API_KEY_${index}`];
         if (key && key.trim()) {
-            apiKeys.push(key.trim());
-            apiKeyEntries.push({ index, key: key.trim() });
+            const trimmedKey = key.trim();
+            apiKeys.push(trimmedKey);
+            apiKeyEntries.push({ index, key: trimmedKey });
         }
         index += 1;
     }
 
+    const modelEntries = [];
     const models = [];
     let modelIndex = 1;
     while (modelIndex <= 20) {
         const model = process.env[`${providerKey}_MODEL_${modelIndex}`];
-        if (model && model.trim()) models.push(model.trim());
+        if (model && model.trim()) {
+            const trimmedModel = model.trim();
+            modelEntries.push({ index: modelIndex, model: trimmedModel });
+            models.push(trimmedModel);
+        }
         modelIndex += 1;
     }
+
+    const activeIndex = (() => {
+        const candidateIndexes = new Set([...apiKeyEntries.map((entry) => entry.index), ...modelEntries.map((entry) => entry.index)]);
+        const activeSlot = Array.from(candidateIndexes).sort((left, right) => left - right).find((candidate) => {
+            return apiKeyEntries.some((entry) => entry.index === candidate) && modelEntries.some((entry) => entry.index === candidate);
+        });
+        if (typeof activeSlot === 'number') return activeSlot;
+        if (apiKeyEntries[0]?.index != null) return apiKeyEntries[0].index;
+        if (modelEntries[0]?.index != null) return modelEntries[0].index;
+        return null;
+    })();
+
+    const activeKeyEntry = apiKeyEntries.find((entry) => entry.index === activeIndex) || apiKeyEntries[0] || null;
+    const activeModelEntry = modelEntries.find((entry) => entry.index === activeIndex) || modelEntries[0] || null;
 
     return {
         providerName,
         apiKeys,
         apiKeyEntries,
         models,
+        modelEntries,
         keysConfigured: apiKeys.length,
-        modelsConfigured: models.length
+        modelsConfigured: models.length,
+        activeKeyNumber: activeKeyEntry?.index ?? null,
+        activeKey: activeKeyEntry?.key ?? null,
+        activeModel: activeModelEntry?.model ?? null
     };
 }
 

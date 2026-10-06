@@ -30,10 +30,16 @@ test('provider config loads configured keys and models', () => {
 
     assert.deepEqual(gemini.apiKeys, ['gemini-key-1', 'gemini-key-2', 'gemini-key-3']);
     assert.deepEqual(gemini.models, ['gemini-model-1', 'gemini-model-2']);
+    assert.equal(gemini.activeKeyNumber, 1);
+    assert.equal(gemini.activeModel, 'gemini-model-1');
 
     assert.deepEqual(groq.apiKeys, ['groq-key-1', 'groq-key-2']);
     assert.deepEqual(groq.models, ['groq-model-1']);
+    assert.equal(groq.activeKeyNumber, 1);
+    assert.equal(groq.activeModel, 'groq-model-1');
 
     assert.deepEqual(openrouter.apiKeys, ['openrouter-key-1', 'openrouter-key-2']);
     assert.deepEqual(openrouter.models, ['openrouter-model-1']);
+    assert.equal(openrouter.activeKeyNumber, 1);
+    assert.equal(openrouter.activeModel, 'openrouter-model-1');
 });

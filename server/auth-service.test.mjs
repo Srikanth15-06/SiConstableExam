@@ -134,7 +134,7 @@ test('signup, duplicate signup, login, /auth/me, rotation, and logout use safe c
     const firstCookieHeader = firstLogin.headers.get('set-cookie');
     assert.match(firstCookieHeader, /HttpOnly/i);
     assert.match(firstCookieHeader, /Secure/i);
-    assert.match(firstCookieHeader, /SameSite=Lax/i);
+    assert.match(firstCookieHeader, /SameSite=None/i);
     const firstCookie = firstCookieHeader.split(';')[0];
 
     const me = await fetch(`${baseUrl}/api/auth/me`, { headers: { Cookie: firstCookie } });
@@ -201,7 +201,7 @@ test('legacy import verifies PBKDF2, upgrades to bcrypt, issues a session, and i
     const cookieHeader = first.headers.get('set-cookie');
     assert.match(cookieHeader, /HttpOnly/i);
     assert.match(cookieHeader, /Secure/i);
-    assert.match(cookieHeader, /SameSite=Lax/i);
+    assert.match(cookieHeader, /SameSite=None/i);
     const cookie = cookieHeader.split(';')[0];
     const stored = dataStore.records.get(firstBody.user.userId);
     assert.match((await dataStore.findAccountById(firstBody.user.userId)).passwordHash, /^\$2[aby]\$/);

@@ -8,7 +8,7 @@ import {
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell
 } from 'recharts';
-import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, getDriveAuthUrl, loginDriveAdmin, logoutDriveAdmin, checkDriveConnection, uploadDriveFile, getDriveFileContentUrl, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, saveCurrentCandidateBookmarks, createTestAttempt, createBookmarkedTestAttempt, createRevisionMockAttempt, submitTestAttempt, saveTestAnswers, getTopicLearningVideos, getAdminLearningVideos, createAdminLearningVideo, updateAdminLearningVideo, deleteAdminLearningVideo } from './services/aiService.js';
+import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, getDriveAuthUrl, loginDriveAdmin, logoutDriveAdmin, checkDriveConnection, uploadDriveFile, getDriveFileContentUrl, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, saveCurrentCandidateBookmarks, createTestAttempt, createBookmarkedTestAttempt, createRevisionMockAttempt, submitTestAttempt, saveTestAnswers, getTopicLearningVideos, getAdminLearningVideos, createAdminLearningVideo, updateAdminLearningVideo, deleteAdminLearningVideo, getAIStatus } from './services/aiService.js';
 import { normalizeAnswer } from './test-results.js';
 import { LEGACY_MEMBERS_STORAGE_KEY, readLegacyMembers, removeImportedLegacyMember } from './legacy-import.js';
 import { SUBJECT_TOPICS } from './syllabus.js';
@@ -407,6 +407,10 @@ export default function App() {
   const [isDriveUploading, setIsDriveUploading] = useState(false);
   const [driveUploadMessage, setDriveUploadMessage] = useState('');
   const [drivePreviewFile, setDrivePreviewFile] = useState(null);
+  const [providerStatus, setProviderStatus] = useState({
+    groq: { activeKeyNumber: null, activeModel: null, available: false, configuredKeys: 0, configuredModels: 0 },
+    openrouter: { activeKeyNumber: null, activeModel: null, available: false, configuredKeys: 0, configuredModels: 0 }
+  });
   const [isDrivePreviewFullscreen, setIsDrivePreviewFullscreen] = useState(false);
   const driveRequestSequenceRef = useRef(0);
   const drivePreviewContainerRef = useRef(null);
@@ -507,6 +511,39 @@ export default function App() {
       }
     };
     void restoreCandidateSession();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    let active = true;
+    const syncProviderStatus = async () => {
+      try {
+        const status = await getAIStatus();
+        if (!active) return;
+        setProviderStatus({
+          groq: {
+            activeKeyNumber: status?.groq?.activeKeyNumber ?? null,
+            activeModel: status?.groq?.activeModel ?? null,
+            available: Boolean(status?.groq?.available),
+            configuredKeys: Number(status?.groq?.configuredKeys) || 0,
+            configuredModels: Number(status?.groq?.configuredModels) || 0,
+          },
+          openrouter: {
+            activeKeyNumber: status?.openrouter?.activeKeyNumber ?? null,
+            activeModel: status?.openrouter?.activeModel ?? null,
+            available: Boolean(status?.openrouter?.available),
+            configuredKeys: Number(status?.openrouter?.configuredKeys) || 0,
+            configuredModels: Number(status?.openrouter?.configuredModels) || 0,
+          }
+        });
+      } catch (error) {
+        if (!active) return;
+        console.warn('Unable to load active AI provider status.', error);
+      }
+    };
+    void syncProviderStatus();
     return () => {
       active = false;
     };
@@ -4156,6 +4193,48 @@ export default function App() {
                   <p className="text-2xl font-black text-amber-400 mt-1">{selectedExamQuestionCount}</p>
                 </div>
               </div>
+
+              <section aria-label="Active AI provider status" className="rounded-2xl border border-indigo-500/20 bg-slate-800/80 p-5 shadow-xl">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-[0.2em] text-indigo-300">AI status</p>
+                    <h3 className="mt-2 text-lg font-bold text-white">Current LLM configuration</h3>
+                  </div>
+                  <div className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-[11px] font-bold text-emerald-200">
+                    {providerStatus.groq.available || providerStatus.openrouter.available ? 'Providers active' : 'Awaiting config'}
+                  </div>
+                </div>
+
+                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                  <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Groq</p>
+                    <dl className="mt-3 space-y-2 text-sm text-slate-200">
+                      <div className="flex items-center justify-between gap-4">
+                        <dt className="text-slate-400">Model</dt>
+                        <dd className="font-semibold text-white">{providerStatus.groq.activeModel || 'Not configured'}</dd>
+                      </div>
+                      <div className="flex items-center justify-between gap-4">
+                        <dt className="text-slate-400">Key number</dt>
+                        <dd className="font-semibold text-white">{providerStatus.groq.activeKeyNumber ?? '—'}</dd>
+                      </div>
+                    </dl>
+                  </div>
+
+                  <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">OpenRouter</p>
+                    <dl className="mt-3 space-y-2 text-sm text-slate-200">
+                      <div className="flex items-center justify-between gap-4">
+                        <dt className="text-slate-400">Model</dt>
+                        <dd className="font-semibold text-white">{providerStatus.openrouter.activeModel || 'Not configured'}</dd>
+                      </div>
+                      <div className="flex items-center justify-between gap-4">
+                        <dt className="text-slate-400">Key number</dt>
+                        <dd className="font-semibold text-white">{providerStatus.openrouter.activeKeyNumber ?? '—'}</dd>
+                      </div>
+                    </dl>
+                  </div>
+                </div>
+              </section>
 
               <section aria-label="Progress report tools" className="rounded-2xl border border-slate-700 bg-slate-800/80 p-5 shadow-xl print:hidden">
                 <div className="flex flex-wrap items-center justify-between gap-4">
