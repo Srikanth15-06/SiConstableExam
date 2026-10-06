@@ -408,6 +408,7 @@ export default function App() {
   const [driveUploadMessage, setDriveUploadMessage] = useState('');
   const [drivePreviewFile, setDrivePreviewFile] = useState(null);
   const [providerStatus, setProviderStatus] = useState({
+    gemini: { activeKeyNumber: null, activeModel: null, available: false, configuredKeys: 0, configuredModels: 0 },
     groq: { activeKeyNumber: null, activeModel: null, available: false, configuredKeys: 0, configuredModels: 0 },
     openrouter: { activeKeyNumber: null, activeModel: null, available: false, configuredKeys: 0, configuredModels: 0 }
   });
@@ -523,6 +524,13 @@ export default function App() {
         const status = await getAIStatus();
         if (!active) return;
         setProviderStatus({
+          gemini: {
+            activeKeyNumber: status?.gemini?.activeKeyNumber ?? null,
+            activeModel: status?.gemini?.activeModel ?? null,
+            available: Boolean(status?.gemini?.available),
+            configuredKeys: Number(status?.gemini?.configuredKeys) || 0,
+            configuredModels: Number(status?.gemini?.configuredModels) || 0,
+          },
           groq: {
             activeKeyNumber: status?.groq?.activeKeyNumber ?? null,
             activeModel: status?.groq?.activeModel ?? null,
@@ -4201,11 +4209,25 @@ export default function App() {
                     <h3 className="mt-2 text-lg font-bold text-white">Current LLM configuration</h3>
                   </div>
                   <div className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-[11px] font-bold text-emerald-200">
-                    {providerStatus.groq.available || providerStatus.openrouter.available ? 'Providers active' : 'Awaiting config'}
+                    {providerStatus.gemini.available || providerStatus.groq.available || providerStatus.openrouter.available ? 'Providers active' : 'Awaiting config'}
                   </div>
                 </div>
 
-                <div className="mt-4 grid gap-3 md:grid-cols-2">
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Gemini</p>
+                    <dl className="mt-3 space-y-2 text-sm text-slate-200">
+                      <div className="flex items-center justify-between gap-4">
+                        <dt className="text-slate-400">Model</dt>
+                        <dd className="font-semibold text-white">{providerStatus.gemini.activeModel || 'Not configured'}</dd>
+                      </div>
+                      <div className="flex items-center justify-between gap-4">
+                        <dt className="text-slate-400">Key number</dt>
+                        <dd className="font-semibold text-white">{providerStatus.gemini.activeKeyNumber ?? '—'}</dd>
+                      </div>
+                    </dl>
+                  </div>
+
                   <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Groq</p>
                     <dl className="mt-3 space-y-2 text-sm text-slate-200">
