@@ -408,9 +408,9 @@ export default function App() {
   const [driveUploadMessage, setDriveUploadMessage] = useState('');
   const [drivePreviewFile, setDrivePreviewFile] = useState(null);
   const [providerStatus, setProviderStatus] = useState({
-    gemini: { activeKeyNumber: null, activeModel: null, available: false, configuredKeys: 0, configuredModels: 0 },
-    groq: { activeKeyNumber: null, activeModel: null, available: false, configuredKeys: 0, configuredModels: 0 },
-    openrouter: { activeKeyNumber: null, activeModel: null, available: false, configuredKeys: 0, configuredModels: 0 }
+    gemini: { activeKeyNumber: null, activeModel: null, lastSuccessful: false, available: false, configuredKeys: 0, configuredModels: 0 },
+    groq: { activeKeyNumber: null, activeModel: null, lastSuccessful: false, available: false, configuredKeys: 0, configuredModels: 0 },
+    openrouter: { activeKeyNumber: null, activeModel: null, lastSuccessful: false, available: false, configuredKeys: 0, configuredModels: 0 }
   });
   const [isDrivePreviewFullscreen, setIsDrivePreviewFullscreen] = useState(false);
   const driveRequestSequenceRef = useRef(0);
@@ -527,6 +527,7 @@ export default function App() {
           gemini: {
             activeKeyNumber: status?.gemini?.activeKeyNumber ?? null,
             activeModel: status?.gemini?.activeModel ?? null,
+            lastSuccessful: Boolean(status?.gemini?.lastSuccessful),
             available: Boolean(status?.gemini?.available),
             configuredKeys: Number(status?.gemini?.configuredKeys) || 0,
             configuredModels: Number(status?.gemini?.configuredModels) || 0,
@@ -534,6 +535,7 @@ export default function App() {
           groq: {
             activeKeyNumber: status?.groq?.activeKeyNumber ?? null,
             activeModel: status?.groq?.activeModel ?? null,
+            lastSuccessful: Boolean(status?.groq?.lastSuccessful),
             available: Boolean(status?.groq?.available),
             configuredKeys: Number(status?.groq?.configuredKeys) || 0,
             configuredModels: Number(status?.groq?.configuredModels) || 0,
@@ -541,6 +543,7 @@ export default function App() {
           openrouter: {
             activeKeyNumber: status?.openrouter?.activeKeyNumber ?? null,
             activeModel: status?.openrouter?.activeModel ?? null,
+            lastSuccessful: Boolean(status?.openrouter?.lastSuccessful),
             available: Boolean(status?.openrouter?.available),
             configuredKeys: Number(status?.openrouter?.configuredKeys) || 0,
             configuredModels: Number(status?.openrouter?.configuredModels) || 0,
@@ -552,10 +555,12 @@ export default function App() {
       }
     };
     void syncProviderStatus();
+    const statusRefreshTimer = currentView === 'profile' ? setInterval(() => { void syncProviderStatus(); }, 5000) : null;
     return () => {
       active = false;
+      if (statusRefreshTimer) clearInterval(statusRefreshTimer);
     };
-  }, []);
+  }, [currentView]);
 
   useEffect(() => {
     if (currentView !== 'topic-detail' || !currentMember?.id || !selectedSubject || !selectedTopic) return undefined;
@@ -4206,7 +4211,8 @@ export default function App() {
                 <div className="flex items-center justify-between gap-3">
                   <div>
                     <p className="text-xs font-bold uppercase tracking-[0.2em] text-indigo-300">AI status</p>
-                    <h3 className="mt-2 text-lg font-bold text-white">Current LLM configuration</h3>
+                    <h3 className="mt-2 text-lg font-bold text-white">Last-used model and key</h3>
+                    <p className="mt-1 text-xs text-slate-400">Shows the key and model from each provider's most recent successful request.</p>
                   </div>
                   <div className="rounded-full border border-emerald-500/30 bg-emerald-500/10 px-3 py-1 text-[11px] font-bold text-emerald-200">
                     {providerStatus.gemini.available || providerStatus.groq.available || providerStatus.openrouter.available ? 'Providers active' : 'Awaiting config'}
@@ -4216,6 +4222,7 @@ export default function App() {
                 <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                   <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Gemini</p>
+                    <p className="mt-2 text-[11px] text-slate-500">{providerStatus.gemini.lastSuccessful ? 'Last successful request' : 'Configured default · not used successfully yet'}</p>
                     <dl className="mt-3 space-y-2 text-sm text-slate-200">
                       <div className="flex items-center justify-between gap-4">
                         <dt className="text-slate-400">Model</dt>
@@ -4230,6 +4237,7 @@ export default function App() {
 
                   <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Groq</p>
+                    <p className="mt-2 text-[11px] text-slate-500">{providerStatus.groq.lastSuccessful ? 'Last successful request' : 'Configured default · not used successfully yet'}</p>
                     <dl className="mt-3 space-y-2 text-sm text-slate-200">
                       <div className="flex items-center justify-between gap-4">
                         <dt className="text-slate-400">Model</dt>
@@ -4244,6 +4252,7 @@ export default function App() {
 
                   <div className="rounded-xl border border-slate-700 bg-slate-900/60 p-4">
                     <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">OpenRouter</p>
+                    <p className="mt-2 text-[11px] text-slate-500">{providerStatus.openrouter.lastSuccessful ? 'Last successful request' : 'Configured default · not used successfully yet'}</p>
                     <dl className="mt-3 space-y-2 text-sm text-slate-200">
                       <div className="flex items-center justify-between gap-4">
                         <dt className="text-slate-400">Model</dt>

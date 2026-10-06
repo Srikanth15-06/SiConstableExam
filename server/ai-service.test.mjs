@@ -17,7 +17,7 @@ process.env.OPENROUTER_API_KEY_1 = 'openrouter-test-key';
 process.env.OPENROUTER_API_KEY_2 = 'openrouter-secondary-key';
 process.env.OPENROUTER_MODEL_1 = 'openrouter-test-model';
 
-const { generateQuestions, generateNotes, generateChatReply } = await import('./ai-service.mjs');
+const { generateQuestions, generateNotes, generateChatReply, getAiStatus } = await import('./ai-service.mjs');
 const questionRequest = { exam: 'TS SI', subject: 'Arithmetic', topic: 'Percentages', difficulty: 'Beginner', count: 10, attemptSeed: 1 };
 
 function makeQuestions({ subject = 'Arithmetic', topic = 'Percentages', difficulty = 'Beginner', start = 1, count = 10 } = {}) {
@@ -73,6 +73,10 @@ test('Gemini skips an invalid key, falls through an unavailable model, and rotat
         { model: 'gemini-retired-model', key: 'gemini-secondary-key' },
         { model: 'gemini-working-model', key: 'gemini-secondary-key' }
     ]);
+    const status = await getAiStatus();
+    assert.equal(status.gemini.activeKeyNumber, 2);
+    assert.equal(status.gemini.activeModel, 'gemini-working-model');
+    assert.equal(status.gemini.lastSuccessful, true);
 });
 
 test('Gemini requests replacement questions for leaked topics and incorrect percentage calculations', async () => {

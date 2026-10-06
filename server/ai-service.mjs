@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { validateGoogleDriveConfig } from './google-drive-service.mjs';
 
 const providerKeyCooldowns = new Map();
+const lastSuccessfulProviderSelections = new Map();
 const KEY_COOLDOWN_MS = 60_000;
 const MAX_QUESTION_BATCHES = 4;
 const PROVIDER_REQUEST_TIMEOUT_MS = 15_000;
@@ -116,7 +117,11 @@ async function requestProviderPool(provider, config, sendRequest, parseResponse,
                 }
 
                 const value = parseResponse(data);
-                if (value !== null && value !== undefined) return { value, model, keyIndex };
+                if (value !== null && value !== undefined) {
+                    const providerKey = provider.toLowerCase();
+                    lastSuccessfulProviderSelections.set(providerKey, { activeModel: model, activeKeyNumber: keyIndex });
+                    return { value, model, keyIndex };
+                }
                 failures.push({ model, keyIndex, code: 'INVALID_PROVIDER_RESPONSE', reason: 'Provider returned an invalid response.' });
             } catch (error) {
                 failures.push({ model, keyIndex, code: 'NETWORK_ERROR', reason: sanitizeApiError(error) });
@@ -464,28 +469,21 @@ export async function getAiStatus() {
     const groq = getProviderConfig('groq');
     const openrouter = getProviderConfig('openrouter');
     const drive = validateGoogleDriveConfig();
+    const providerStatus = (providerName, config) => {
+        const lastSuccessful = lastSuccessfulProviderSelections.get(providerName);
+        return {
+            available: config.apiKeys.length > 0 && config.models.length > 0,
+            configuredKeys: config.keysConfigured,
+            configuredModels: config.modelsConfigured,
+            activeKeyNumber: lastSuccessful?.activeKeyNumber ?? config.activeKeyNumber,
+            activeModel: lastSuccessful?.activeModel ?? config.activeModel,
+            lastSuccessful: Boolean(lastSuccessful)
+        };
+    };
     return {
-        gemini: {
-            available: gemini.apiKeys.length > 0 && gemini.models.length > 0,
-            configuredKeys: gemini.keysConfigured,
-            configuredModels: gemini.modelsConfigured,
-            activeKeyNumber: gemini.activeKeyNumber,
-            activeModel: gemini.activeModel
-        },
-        groq: {
-            available: groq.apiKeys.length > 0 && groq.models.length > 0,
-            configuredKeys: groq.keysConfigured,
-            configuredModels: groq.modelsConfigured,
-            activeKeyNumber: groq.activeKeyNumber,
-            activeModel: groq.activeModel
-        },
-        openrouter: {
-            available: openrouter.apiKeys.length > 0 && openrouter.models.length > 0,
-            configuredKeys: openrouter.keysConfigured,
-            configuredModels: openrouter.modelsConfigured,
-            activeKeyNumber: openrouter.activeKeyNumber,
-            activeModel: openrouter.activeModel
-        },
+        gemini: providerStatus('gemini', gemini),
+        groq: providerStatus('groq', groq),
+        openrouter: providerStatus('openrouter', openrouter),
         googleDrive: {
             configured: drive.configured,
             adminAuthConfigured: drive.adminAuthConfigured,
