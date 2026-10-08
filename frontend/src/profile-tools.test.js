@@ -47,14 +47,26 @@ test('spaced revision intervals adapt to the latest per-topic accuracy and due d
 test('mock insights summarize accuracy trend, average time, and strongest/weakest topics', () => {
     const insights = getMockTestInsights([
         {
-            exam: 'SI', date: '2026-10-03', accuracy: 70, timeTaken: '10:00', total: 10,
+            exam: 'SI', date: '2026-10-03', submittedAt: '2026-10-03T10:15:00.000Z', accuracy: 50, timeTaken: '04:00', total: 4,
             questions: [
-                { subject: 'Arithmetic', topic: 'Percentages', status: 'CORRECT' },
-                { subject: 'Reasoning', topic: 'Analogy', status: 'INCORRECT' }
+                { subject: 'Arithmetic', topic: 'Percentages', status: 'CORRECT', userAnswer: 'A' },
+                { subject: 'Reasoning', topic: 'Analogy', status: 'INCORRECT', userAnswer: 'B' },
+                { subject: 'Reasoning', topic: 'Analogy', status: 'UNANSWERED', userAnswer: '' },
+                { subject: 'Arithmetic', topic: 'Percentages', status: 'CORRECT', userAnswer: 'C' }
             ]
         }
     ]);
     assert.equal(insights.recent[0].averageSecondsPerQuestion, 60);
+    assert.equal(insights.recent[0].correct, 2);
+    assert.equal(insights.recent[0].incorrect, 1);
+    assert.equal(insights.recent[0].unanswered, 1);
+    assert.equal(insights.recent[0].dateTime, new Date('2026-10-03T10:15:00.000Z').toLocaleString());
+    assert.deepEqual(insights.recent[0].topicMetrics.map(({ topic, correct, incorrect, unanswered, accuracy }) => (
+        { topic, correct, incorrect, unanswered, accuracy }
+    )), [
+        { topic: 'Percentages', correct: 2, incorrect: 0, unanswered: 0, accuracy: 100 },
+        { topic: 'Analogy', correct: 0, incorrect: 1, unanswered: 1, accuracy: 0 }
+    ]);
     assert.equal(insights.strongest.topic, 'Percentages');
     assert.equal(insights.needsWork.topic, 'Analogy');
 });

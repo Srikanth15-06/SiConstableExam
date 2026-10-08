@@ -8,6 +8,11 @@ function questionCorrect(question) {
     return Boolean(answer && answer === normalizeAnswer(question?.correctAnswer));
 }
 
+function questionUnanswered(question) {
+    if (question?.status) return question.status === 'UNANSWERED';
+    return !normalizeAnswer(question?.userAnswer);
+}
+
 export function getMistakeNotebook(history = [], exam = 'SI') {
     return (Array.isArray(history) ? history : [])
         .filter((attempt) => attempt?.exam === exam)
@@ -97,15 +102,61 @@ export function getMockTestInsights(history = [], exam = 'SI') {
     const recent = attempts.slice(0, 20).reverse().map((attempt, index) => {
         const timeMatch = String(attempt.timeTaken || '').match(/^(\d+):(\d{2})$/);
         const elapsedSeconds = timeMatch ? Number(timeMatch[1]) * 60 + Number(timeMatch[2]) : 0;
-        const total = Number(attempt.total) || attempt.questions?.length || 0;
+        const questions = Array.isArray(attempt.questions) ? attempt.questions : [];
+        const total = Number(attempt.total) || questions.length;
+        const questionCounts = questions.reduce((counts, question) => {
+            if (questionUnanswered(question)) {
+                counts.unanswered += 1;
+            } else if (questionCorrect(question)) {
+                counts.correct += 1;
+            } else {
+                counts.incorrect += 1;
+            }
+            return counts;
+        }, { correct: 0, incorrect: 0, unanswered: 0 });
+        const correct = questions.length ? questionCounts.correct : Number(attempt.correct ?? attempt.score) || 0;
+        const unanswered = questions.length ? questionCounts.unanswered : Number(attempt.unanswered) || 0;
+        const incorrect = questions.length
+            ? questionCounts.incorrect
+            : Number(attempt.incorrect) || Math.max(0, total - correct - unanswered);
+        const topicMetrics = new Map();
+        for (const question of questions) {
+            const subject = question.subject || attempt.subject || '';
+            const topic = question.topic || attempt.topic || '';
+            if (!topic) continue;
+            const key = `${subject}\u0000${topic}`;
+            const metric = topicMetrics.get(key) || { subject, topic, correct: 0, incorrect: 0, unanswered: 0, total: 0 };
+            metric.total += 1;
+            if (questionUnanswered(question)) {
+                metric.unanswered += 1;
+            } else if (questionCorrect(question)) {
+                metric.correct += 1;
+            } else {
+                metric.incorrect += 1;
+            }
+            topicMetrics.set(key, metric);
+        }
+        const timestamp = String(attempt.submittedAt || '');
+        const parsedTimestamp = Date.parse(timestamp);
         return {
             name: `Test ${index + 1}`,
             date: attempt.date || '',
+            dateTime: Number.isFinite(parsedTimestamp)
+                ? new Date(parsedTimestamp).toLocaleString()
+                : attempt.date ? `${attempt.date} (time unavailable)` : 'Not recorded',
             accuracy: Number(attempt.accuracy) || 0,
+            correct,
+            incorrect,
+            unanswered,
+            total,
             averageSecondsPerQuestion: Number(attempt.averageSecondsPerQuestion)
                 || (total ? Math.round(elapsedSeconds / total) : 0),
             subject: attempt.subject || '',
-            topic: attempt.topic || ''
+            topic: attempt.topic || [...topicMetrics.values()].map((metric) => metric.topic).join(', ') || 'Not recorded',
+            topicMetrics: [...topicMetrics.values()].map((metric) => ({
+                ...metric,
+                accuracy: metric.total ? Math.round(metric.correct / metric.total * 100) : 0
+            }))
         };
     });
 

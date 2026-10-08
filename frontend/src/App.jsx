@@ -4405,7 +4405,24 @@ export default function App() {
                     </div>
                     <div aria-label="Recent test performance" className="profile-scroll-region max-h-[32rem] space-y-2 overflow-y-auto overscroll-contain pr-2" role="region" tabIndex={0}>
                       {mockTestInsights.recent.map((item) => (
-                        <div key={`${item.name}:${item.date}`} className="grid grid-cols-[4.5rem_1fr_auto] items-center gap-3 text-xs">
+                        <div
+                          key={`${item.name}:${item.date}`}
+                          className="grid grid-cols-[4.5rem_1fr_auto] items-center gap-3 text-xs"
+                          title={[
+                            `Topic: ${item.topic}`,
+                            item.subject && `Subject: ${item.subject}`,
+                            `Correct: ${item.correct}`,
+                            `Wrong: ${item.incorrect}`,
+                            `Not attempted: ${item.unanswered}`,
+                            `Accuracy: ${item.accuracy}%`,
+                            `Date and time: ${item.dateTime}`,
+                            item.averageSecondsPerQuestion && `Average time: ${item.averageSecondsPerQuestion}s/question`,
+                            ...item.topicMetrics.map((topic) => `${topic.topic}: ${topic.correct} correct, ${topic.incorrect} wrong, ${topic.unanswered} not attempted, ${topic.accuracy}% accuracy`)
+                          ].filter(Boolean).join('\n')}
+                          aria-label={`${item.topic}. ${item.correct} correct, ${item.incorrect} wrong, ${item.unanswered} not attempted. ${item.accuracy}% accuracy. Date and time: ${item.dateTime}.`}
+                          tabIndex={0}
+                          role="group"
+                        >
                           <span className="text-slate-400">{item.date || item.name}</span>
                           <div className="h-2 overflow-hidden rounded-full bg-slate-700" role="img" aria-label={`${item.accuracy}% accuracy`}>
                             <div className={`h-full rounded-full ${item.accuracy >= 70 ? 'bg-emerald-500' : item.accuracy >= 50 ? 'bg-amber-500' : 'bg-rose-500'}`} style={{ width: `${Math.min(100, Math.max(0, item.accuracy))}%` }} />
