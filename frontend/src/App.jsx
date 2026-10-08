@@ -3406,7 +3406,15 @@ export default function App() {
                     </span>
                   </h3>
                 </div>
-
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  title="Print or save this question paper as a PDF"
+                  className="print:hidden inline-flex items-center gap-2 rounded-lg border border-blue-400/30 bg-blue-500/10 px-3 py-2 text-xs font-bold text-blue-100 transition hover:bg-blue-500/20"
+                >
+                  <Download className="h-4 w-4" />
+                  Download PDF
+                </button>
               </div>
               {questionGenerationNotice && (
                 <p className="text-xs text-teal-300 bg-teal-500/10 border border-teal-500/20 rounded-lg px-3 py-2">
@@ -3521,6 +3529,34 @@ export default function App() {
                 </div>
               </div>
             </div>
+          )}
+
+          {currentView === 'test' && activeTestQuestions.length > 0 && (
+            <section id="question-paper-print" aria-hidden="true">
+              <h1>TS Police {selectedExam === 'CONSTABLE' ? 'Constable' : 'SI'} Practice Question Paper</h1>
+              <p className="question-paper-meta">
+                {selectedExam === 'CONSTABLE' ? 'TS Constable' : 'TS SI'}
+                {['revision-mock', 'exam-day'].includes(activeTestMode)
+                  ? ' · Practiced topics'
+                  : activeTestMode === 'bookmark-practice'
+                    ? ' · Saved questions'
+                    : ` · ${selectedSubject}`}
+                {selectedTopic && !['revision-mock', 'exam-day', 'bookmark-practice'].includes(activeTestMode) ? ` · ${selectedTopic}` : ''}
+              </p>
+              {activeTestQuestions.map((question, questionIndex) => (
+                <article className="question-paper-item" key={question.id || questionIndex}>
+                  <h2>
+                    <span>{questionIndex + 1}.</span> {question.question}
+                  </h2>
+                  {question.questionType && <p className="question-paper-type">{question.questionType}</p>}
+                  <ol type="A">
+                    {(Array.isArray(question.options) ? question.options : []).map((option, optionIndex) => (
+                      <li key={optionIndex}>{option}</li>
+                    ))}
+                  </ol>
+                </article>
+              ))}
+            </section>
           )}
 
           {/* TEST RESULT VIEW */}
@@ -4314,7 +4350,7 @@ export default function App() {
                 </div>
                 <p className="mt-2 text-xs leading-5 text-slate-400">Review intervals adapt to your latest topic accuracy: weaker topics return sooner, while stronger topics are spaced further apart.</p>
                 {spacedRevisionRecommendations.length ? (
-                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
+                  <div aria-label="Spaced revision recommendations" className="profile-scroll-region mt-4 grid max-h-[32rem] gap-2 overflow-y-auto overscroll-contain pr-2 sm:grid-cols-2" role="region" tabIndex={0}>
                     {spacedRevisionRecommendations.map((item) => (
                       <div key={`${item.subject}:${item.topic}`} className="flex items-center justify-between gap-3 rounded-xl border border-slate-700 bg-slate-900/60 p-3">
                         <div className="min-w-0">
@@ -4337,7 +4373,7 @@ export default function App() {
                   <span className="rounded-full bg-rose-500/10 px-3 py-1 text-xs font-bold text-rose-200">{mistakeNotebook.length} items</span>
                 </div>
                 {mistakeNotebook.length ? (
-                  <div aria-label="Mistake notebook entries" className="mt-4 max-h-[32rem] space-y-2 overflow-y-auto overscroll-contain pr-2" role="region" tabIndex={0}>
+                  <div aria-label="Mistake notebook entries" className="profile-scroll-region mt-4 max-h-[32rem] space-y-2 overflow-y-auto overscroll-contain pr-2" role="region" tabIndex={0}>
                     {mistakeNotebook.map((item, index) => (
                       <div key={`${item.attemptId}:${item.id || index}`} className="flex flex-col gap-2 rounded-xl border border-slate-700 bg-slate-900/60 p-3 sm:flex-row sm:items-center sm:justify-between">
                         <div className="min-w-0">
@@ -4367,7 +4403,7 @@ export default function App() {
                       <p className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-emerald-100">Strongest: {mockTestInsights.strongest ? `${mockTestInsights.strongest.topic} (${mockTestInsights.strongest.accuracy}%)` : 'Not enough topic data'}</p>
                       <p className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-amber-100">Needs work: {mockTestInsights.needsWork ? `${mockTestInsights.needsWork.topic} (${mockTestInsights.needsWork.accuracy}%)` : 'Not enough topic data'}</p>
                     </div>
-                    <div className="space-y-2">
+                    <div aria-label="Recent test performance" className="profile-scroll-region max-h-[32rem] space-y-2 overflow-y-auto overscroll-contain pr-2" role="region" tabIndex={0}>
                       {mockTestInsights.recent.map((item) => (
                         <div key={`${item.name}:${item.date}`} className="grid grid-cols-[4.5rem_1fr_auto] items-center gap-3 text-xs">
                           <span className="text-slate-400">{item.date || item.name}</span>
@@ -4393,7 +4429,7 @@ export default function App() {
                 {accountDataError && <p role="alert" className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-200">{accountDataError}</p>}
                 {selectedExamBookmarks.length ? (
                   <>
-                    <div className="mt-4 space-y-2">
+                    <div aria-label="Saved questions list" className="profile-scroll-region mt-4 max-h-[32rem] space-y-2 overflow-y-auto overscroll-contain pr-2" role="region" tabIndex={0}>
                       {selectedExamBookmarks.map((item) => (
                         <div key={item.id} className="flex items-start gap-3 rounded-xl border border-slate-700 bg-slate-900/60 p-3">
                           <input aria-label={`Select saved question: ${item.question}`} type="checkbox" checked={selectedBookmarkIds.includes(item.id)} onChange={(event) => setSelectedBookmarkIds((previous) => event.target.checked ? [...new Set([...previous, item.id])] : previous.filter((id) => id !== item.id))} className="mt-1 accent-teal-500" />
@@ -4467,9 +4503,9 @@ export default function App() {
               <div className="bg-slate-800 border border-slate-700 rounded-2xl p-6 shadow-xl space-y-4">
                 <h3 className="text-lg font-bold text-white">Attempt Log</h3>
                 {!selectedExamHistory.length && <p className="text-sm text-slate-400">No tests completed yet. Start a topic test to build your member history.</p>}
-                <div className="overflow-x-auto">
+                <div aria-label="Test attempt history" className="profile-scroll-region max-h-[32rem] overflow-auto overscroll-contain" role="region" tabIndex={0}>
                   <table className="w-full text-left text-xs text-slate-300">
-                    <thead className="bg-slate-900 text-slate-400 uppercase font-semibold">
+                    <thead className="sticky top-0 bg-slate-900 text-slate-400 uppercase font-semibold">
                       <tr>
                         <th className="p-3">Topic</th>
                         <th className="p-3">Level</th>
