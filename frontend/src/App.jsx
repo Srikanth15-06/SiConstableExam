@@ -8,7 +8,7 @@ import {
 import {
   ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Cell
 } from 'recharts';
-import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, getDriveAuthUrl, loginDriveAdmin, logoutDriveAdmin, checkDriveConnection, uploadDriveFile, getDriveFileContentUrl, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, saveCurrentCandidateBookmarks, createTestAttempt, createBookmarkedTestAttempt, createRevisionMockAttempt, submitTestAttempt, saveTestAnswers, getTopicLearningVideos, getAdminLearningVideos, createAdminLearningVideo, updateAdminLearningVideo, deleteAdminLearningVideo, getAIStatus } from './services/aiService.js';
+import { generateNotes, sendChatMessage, getDriveStatus, getDriveFolder, getDriveTopicFiles, getDriveAuthUrl, loginDriveAdmin, logoutDriveAdmin, checkDriveConnection, uploadDriveFile, renameDriveItem, getDriveFileContentUrl, getDriveFolderFileContentUrl, getDriveFolderFileThumbnailUrl, signUpCandidate, loginCandidate, importLegacyCandidate, logoutCandidate, getCurrentCandidate, getCurrentCandidateData, updateCurrentCandidateProfile, saveCurrentCandidatePlanner, saveCurrentCandidateBookmarks, createTestAttempt, createBookmarkedTestAttempt, createRevisionMockAttempt, submitTestAttempt, saveTestAnswers, getTopicLearningVideos, getAdminLearningVideos, createAdminLearningVideo, updateAdminLearningVideo, deleteAdminLearningVideo, getAIStatus } from './services/aiService.js';
 import { normalizeAnswer } from './test-results.js';
 import { LEGACY_MEMBERS_STORAGE_KEY, readLegacyMembers, removeImportedLegacyMember } from './legacy-import.js';
 import { SUBJECT_TOPICS } from './syllabus.js';
@@ -51,7 +51,25 @@ const UPCOMING_EXAMS = [
   { id: 'constable', name: 'TS Constable / PC-equivalent', date: '20 December 2026', weekday: 'Sunday', targetTime: Date.parse('2026-12-20T00:00:00+05:30') }
 ];
 const isDriveBrowserPreviewable = (mimeType) => mimeType === 'application/pdf' || mimeType === 'text/plain' || mimeType.startsWith('image/');
-const fileMimeLabel = (mimeType) => mimeType.startsWith('application/vnd.google-apps.') ? 'Google file · PDF preview' : mimeType;
+const fileMimeLabel = (mimeType) => {
+  const labels = {
+    'application/pdf': 'PDF document',
+    'application/msword': 'Word document',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'Word document',
+    'application/vnd.ms-powerpoint': 'PowerPoint presentation',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'PowerPoint presentation',
+    'application/vnd.ms-excel': 'Excel spreadsheet',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'Excel spreadsheet',
+    'application/vnd.google-apps.document': 'Google Docs · PDF preview',
+    'application/vnd.google-apps.spreadsheet': 'Google Sheets · PDF preview',
+    'application/vnd.google-apps.presentation': 'Google Slides · PDF preview',
+    'text/plain': 'Text document',
+    'image/png': 'PNG image',
+    'image/jpeg': 'JPEG image',
+    'image/webp': 'WebP image'
+  };
+  return labels[mimeType] || mimeType;
+};
 
 function getDriveQueryState() {
   if (typeof window === 'undefined') return null;
@@ -413,6 +431,10 @@ export default function App() {
     openrouter: { activeKeyNumber: null, activeModel: null, lastSuccessful: false, available: false, configuredKeys: 0, configuredModels: 0 }
   });
   const [isDrivePreviewFullscreen, setIsDrivePreviewFullscreen] = useState(false);
+  const [driveRenameItem, setDriveRenameItem] = useState(null);
+  const [driveRenameValue, setDriveRenameValue] = useState('');
+  const [driveRenameError, setDriveRenameError] = useState('');
+  const [isDriveRenaming, setIsDriveRenaming] = useState(false);
   const driveRequestSequenceRef = useRef(0);
   const drivePreviewContainerRef = useRef(null);
   const notesDoubtLogRef = useRef(null);
@@ -1213,7 +1235,7 @@ export default function App() {
     setDriveCurrentFolderId(folderId);
     setDriveBreadcrumbs(breadcrumbs);
     try {
-      const contents = await getDriveFolder(folderId);
+      const contents = await getDriveFolder(folderId, { includeFolderPreviews: true });
       if (requestSequence !== driveRequestSequenceRef.current) return;
       setDriveCurrentFolders(contents.folders);
       setDriveCurrentFiles(contents.files);
@@ -1242,7 +1264,7 @@ export default function App() {
       const status = await getDriveStatus();
       if (requestSequence !== driveRequestSequenceRef.current) return;
       setDriveRootFolderId(status.rootFolderId);
-      const contents = await getDriveFolder(status.rootFolderId);
+      const contents = await getDriveFolder(status.rootFolderId, { includeFolderPreviews: true });
       if (requestSequence !== driveRequestSequenceRef.current) return;
       setDriveCurrentFolderId(status.rootFolderId);
       setDriveBreadcrumbs([{ id: status.rootFolderId, name: 'Subjects' }]);
@@ -1474,13 +1496,38 @@ export default function App() {
   };
 
   const handleOpenDriveFile = (file) => {
-    const subjectFolderId = driveBreadcrumbs[1]?.id;
-    if (!subjectFolderId || !driveCurrentFolderId || driveBreadcrumbs.length !== 3) return;
+    if (!driveCurrentFolderId) return;
     setDrivePreviewFile({
       ...file,
-      contentUrl: getDriveFileContentUrl(driveCurrentFolderId, subjectFolderId, file.id),
-      downloadUrl: getDriveFileContentUrl(driveCurrentFolderId, subjectFolderId, file.id, true)
+      contentUrl: getDriveFolderFileContentUrl(driveCurrentFolderId, file.id),
+      downloadUrl: getDriveFolderFileContentUrl(driveCurrentFolderId, file.id, true)
     });
+  };
+
+  const handleStartDriveRename = (item, type) => {
+    setDriveRenameItem({ id: item.id, name: item.name, type });
+    setDriveRenameValue(item.name);
+    setDriveRenameError('');
+  };
+
+  const handleRenameDriveItem = async (event) => {
+    event.preventDefault();
+    if (!driveRenameItem || !driveCurrentFolderId || isDriveRenaming) return;
+    setIsDriveRenaming(true);
+    setDriveRenameError('');
+    try {
+      const renamedItem = await renameDriveItem(driveRenameItem.id, driveCurrentFolderId, driveRenameValue);
+      setDriveRenameItem(null);
+      setDriveRenameValue('');
+      if (drivePreviewFile?.id === renamedItem.id) {
+        setDrivePreviewFile((current) => current ? { ...current, ...renamedItem } : current);
+      }
+      await loadDriveFolder(driveCurrentFolderId, driveBreadcrumbs);
+    } catch (error) {
+      setDriveRenameError(error.message || 'The Drive item could not be renamed.');
+    } finally {
+      setIsDriveRenaming(false);
+    }
   };
 
   const handleToggleDrivePreviewFullscreen = async () => {
@@ -4011,17 +4058,61 @@ export default function App() {
                   <h3 className="text-sm font-bold text-slate-200">{driveBreadcrumbs.length === 1 ? 'Subjects' : 'Topics'}</h3>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     {driveCurrentFolders.map((folder) => (
-                      <button
-                        key={folder.id}
-                        onClick={() => handleOpenDriveFolder(folder)}
-                        className="flex items-center justify-between gap-3 rounded-lg border border-slate-700 bg-slate-800 p-4 text-left hover:border-teal-500 hover:bg-slate-800/80"
-                      >
-                        <span className="flex min-w-0 items-center gap-3">
-                          <Folder className="h-5 w-5 shrink-0 text-teal-300" />
-                          <span className="truncate font-semibold text-slate-100">{folder.name}</span>
-                        </span>
-                        <ChevronRight className="h-4 w-4 shrink-0 text-slate-500" />
-                      </button>
+                      <article key={folder.id} className="min-w-0 overflow-hidden rounded-lg border border-slate-700 bg-slate-800 hover:border-teal-500/70">
+                        <button
+                          type="button"
+                          onClick={() => handleOpenDriveFolder(folder)}
+                          aria-label={`Open folder ${folder.name}`}
+                          className="block w-full text-left"
+                        >
+                          <span className="grid h-40 grid-cols-2 gap-1 bg-slate-950 p-1">
+                            {folder.previewFiles?.length ? folder.previewFiles.map((file) => (
+                              <span key={file.id} className="flex min-w-0 items-center justify-center overflow-hidden rounded bg-slate-900">
+                                <img
+                                  src={getDriveFolderFileThumbnailUrl(folder.id, file.id)}
+                                  alt={file.name}
+                                  loading="lazy"
+                                  className="h-full w-full object-cover"
+                                  onError={(event) => {
+                                    event.currentTarget.hidden = true;
+                                    event.currentTarget.nextElementSibling?.classList.remove('hidden');
+                                    event.currentTarget.nextElementSibling?.classList.add('flex');
+                                  }}
+                                />
+                                <span className="hidden flex-col items-center gap-1 p-2 text-center text-slate-400">
+                                  <FileText className="h-8 w-8 text-teal-300" aria-hidden="true" />
+                                  <span className="w-full truncate text-[10px]">{file.name}</span>
+                                </span>
+                              </span>
+                            )) : (
+                              <span className="col-span-2 flex flex-col items-center justify-center gap-2 text-slate-500">
+                                <Folder className="h-10 w-10 text-teal-300/70" aria-hidden="true" />
+                                <span className="text-xs">{folder.previewError || (folder.previewFolderCount ? `${folder.previewFolderCount} subfolders` : 'No direct files')}</span>
+                              </span>
+                            )}
+                          </span>
+                          <span className="flex min-w-0 items-center gap-3 p-3">
+                            <Folder className="h-5 w-5 shrink-0 text-teal-300" aria-hidden="true" />
+                            <span className="min-w-0 flex-1">
+                              <span className="block truncate font-semibold text-slate-100">{folder.name}</span>
+                              <span className="mt-1 block text-xs text-slate-400">
+                                {folder.previewError ? 'Preview unavailable' : folder.previewFileCount === 1 ? '1 file' : `${folder.previewFileCount || 0} files`}
+                                {folder.previewFolderCount > 0 && ` · ${folder.previewFolderCount} folders`}
+                                {folder.modifiedTime && ` · Modified ${new Date(folder.modifiedTime).toLocaleDateString()}`}
+                              </span>
+                            </span>
+                            <ChevronRight className="h-4 w-4 shrink-0 text-slate-500" aria-hidden="true" />
+                          </span>
+                        </button>
+                        {isDriveAdminAuthorized && (
+                          <div className="flex justify-end border-t border-slate-700 px-3 py-2">
+                            <button type="button" onClick={() => handleStartDriveRename(folder, 'folder')} aria-label={`Rename folder ${folder.name}`} title="Rename folder" className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-white">
+                              <Pencil className="h-3.5 w-3.5" />
+                              Rename
+                            </button>
+                          </div>
+                        )}
+                      </article>
                     ))}
                   </div>
                 </section>
@@ -4033,16 +4124,42 @@ export default function App() {
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                     {driveCurrentFiles.map((file) => {
                       return (
-                        <article key={file.id} className="flex min-w-0 items-center gap-2 rounded-lg border border-slate-700 bg-slate-800 p-2 hover:border-teal-500/70">
-                          <button type="button" onClick={() => handleOpenDriveFile(file)} className="flex min-w-0 flex-1 items-center gap-3 p-2 text-left">
-                            <FileText className="h-5 w-5 shrink-0 text-teal-300" />
-                            <span className="min-w-0 flex-1">
-                              <span className="block truncate font-semibold text-slate-100">{file.name}</span>
-                              <span className="mt-1 block truncate text-xs text-slate-400">{file.mimeType}</span>
-                              {file.modifiedTime && <span className="mt-1 block text-xs text-slate-500">Modified {new Date(file.modifiedTime).toLocaleDateString()}</span>}
+                        <article key={file.id} className="min-w-0 overflow-hidden rounded-lg border border-slate-700 bg-slate-800 hover:border-teal-500/70">
+                          <button type="button" onClick={() => handleOpenDriveFile(file)} aria-label={`Preview ${file.name}`} className="block w-full text-left">
+                            <span className="relative flex h-48 items-center justify-center overflow-hidden bg-slate-950">
+                              <img
+                                src={getDriveFolderFileThumbnailUrl(driveCurrentFolderId, file.id)}
+                                alt={`${file.name} preview`}
+                                loading="lazy"
+                                className="h-full w-full object-contain"
+                                onError={(event) => {
+                                  event.currentTarget.hidden = true;
+                                  event.currentTarget.nextElementSibling?.classList.remove('hidden');
+                                  event.currentTarget.nextElementSibling?.classList.add('flex');
+                                }}
+                              />
+                              <span className="hidden flex-col items-center gap-2 text-slate-400">
+                                <FileText className="h-12 w-12 text-teal-300" aria-hidden="true" />
+                                <span className="text-xs">Preview unavailable</span>
+                              </span>
                             </span>
-                            <span className="shrink-0 text-xs font-semibold text-teal-300">View</span>
+                            <span className="block p-3">
+                              <span className="block truncate font-semibold text-slate-100">{file.name}</span>
+                              <span className="mt-1 block truncate text-xs text-teal-300">{fileMimeLabel(file.mimeType)}</span>
+                              {file.modifiedTime && <span className="mt-1 block text-xs text-slate-400">Modified {new Date(file.modifiedTime).toLocaleDateString()}</span>}
+                            </span>
                           </button>
+                          <div className="flex justify-end border-t border-slate-700 px-3 py-2">
+                            <button type="button" onClick={() => handleOpenDriveFile(file)} className="mr-auto rounded-md px-2 py-1 text-xs font-semibold text-teal-300 hover:bg-slate-700">
+                              View full page
+                            </button>
+                            {isDriveAdminAuthorized && (
+                              <button type="button" onClick={() => handleStartDriveRename(file, 'file')} aria-label={`Rename file ${file.name}`} title="Rename file" className="inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-xs font-semibold text-slate-300 hover:bg-slate-700 hover:text-white">
+                                <Pencil className="h-3.5 w-3.5" />
+                                Rename
+                              </button>
+                            )}
+                          </div>
                         </article>
                       );
                     })}
@@ -4098,6 +4215,35 @@ export default function App() {
                         <FileText className="h-10 w-10 text-slate-500" />
                         <p className="text-sm font-semibold text-slate-200">This document format cannot be previewed in the browser.</p>
                         <p className="text-xs text-slate-400">Download it here without leaving the Notes Library.</p>
+                      </div>
+                    )}
+
+                    {driveRenameItem && (
+                      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !isDriveRenaming && setDriveRenameItem(null)}>
+                        <section role="dialog" aria-modal="true" aria-labelledby="drive-rename-title" className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+                          <div className="mb-4 flex items-center gap-3">
+                            <Pencil className="h-5 w-5 text-teal-300" aria-hidden="true" />
+                            <h3 id="drive-rename-title" className="text-base font-bold text-white">Rename {driveRenameItem.type}</h3>
+                          </div>
+                          <form onSubmit={handleRenameDriveItem} className="space-y-4">
+                            <label htmlFor="drive-rename-value" className="block text-sm font-semibold text-slate-300">
+                              Name
+                              <input
+                                id="drive-rename-value"
+                                autoFocus
+                                maxLength={240}
+                                value={driveRenameValue}
+                                onChange={(event) => setDriveRenameValue(event.target.value)}
+                                className="mt-1 w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-teal-500"
+                              />
+                            </label>
+                            {driveRenameError && <p role="alert" className="text-sm text-rose-300">{driveRenameError}</p>}
+                            <div className="flex justify-end gap-2">
+                              <button type="button" onClick={() => setDriveRenameItem(null)} disabled={isDriveRenaming} className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-50">Cancel</button>
+                              <button type="submit" disabled={!driveRenameValue.trim() || isDriveRenaming} className="rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-500 disabled:opacity-50">{isDriveRenaming ? 'Saving...' : 'Save name'}</button>
+                            </div>
+                          </form>
+                        </section>
                       </div>
                     )}
                   </section>

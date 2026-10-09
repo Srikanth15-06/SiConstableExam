@@ -692,7 +692,7 @@ export async function uploadTopicFile(folderId, subjectFolderId, fileName, mimeT
     };
 }
 
-export async function listDriveFolderContents(folderId) {
+export async function listDriveFolderContents(folderId, { includeFolderPreviews = false } = {}) {
     const requestedFolderId = String(folderId || '').trim();
     if (!requestedFolderId) throw new GoogleDriveError('INVALID_REQUEST', 'A Google Drive folder ID is required.');
     const configurationError = getConfigurationError();
@@ -709,6 +709,29 @@ export async function listDriveFolderContents(folderId) {
         } else if (SUPPORTED_NOTE_TYPES.has(item.mimeType)) {
             files.push({ ...item, type: item.mimeType.startsWith('image/') ? 'image' : 'file' });
         }
+    }
+    if (includeFolderPreviews && folders.length) {
+        const folderPreviews = [];
+        for (let index = 0; index < folders.length; index += 5) {
+            const previewBatch = await Promise.all(folders.slice(index, index + 5).map(async (childFolder) => {
+                try {
+                    const childItems = await listChildren(childFolder.id, accessToken);
+                    const supportedFiles = childItems.filter((item) => SUPPORTED_NOTE_TYPES.has(item.mimeType));
+                    return {
+                        ...childFolder,
+                        previewFiles: supportedFiles.slice(0, 4)
+                            .map((item) => ({ ...item, type: item.mimeType.startsWith('image/') ? 'image' : 'file' })),
+                        previewFileCount: supportedFiles.length,
+                        previewFolderCount: childItems.filter((item) => item.mimeType === DRIVE_FOLDER_MIME_TYPE).length
+                    };
+                } catch (error) {
+                    if (!(error instanceof GoogleDriveError)) throw error;
+                    return { ...childFolder, previewError: error.message };
+                }
+            }));
+            folderPreviews.push(...previewBatch);
+        }
+        folders.splice(0, folders.length, ...folderPreviews);
     }
     process.env.GOOGLE_DRIVE_CONNECTED = 'true';
     return {
@@ -752,6 +775,85 @@ export async function getDriveFileContent(fileId, folderId) {
         : (response.headers.get('content-type') || file.mimeType).split(';')[0].trim();
     const name = exportMimeType && !/\.pdf$/i.test(file.name) ? `${file.name}.pdf` : file.name;
     return { name, mimeType, content: Buffer.from(await response.arrayBuffer()) };
+}
+
+export async function getDriveFileThumbnail(fileId, folderId) {
+    const configurationError = getConfigurationError();
+    if (configurationError) throw configurationError;
+    const requestedFileId = String(fileId || '').trim();
+    const requestedFolderId = String(folderId || '').trim();
+    if (!requestedFileId || !requestedFolderId) throw new GoogleDriveError('INVALID_REQUEST', 'A file ID and Notes Library folder ID are required.');
+    const accessToken = await getAccessToken();
+    const folder = await assertFolderWithinRoot(requestedFolderId, accessToken);
+    const file = (await listChildren(folder.id, accessToken))
+        .find((item) => item.id === requestedFileId && SUPPORTED_NOTE_TYPES.has(item.mimeType));
+    if (!file) throw new GoogleDriveError('DRIVE_FILE_NOT_FOUND', 'The requested file is not available in this Notes Library folder.');
+    if (!file.thumbnailLink) throw new GoogleDriveError('DRIVE_PREVIEW_UNAVAILABLE', 'A preview is not available for this file.');
+
+    let thumbnailUrl;
+    try {
+        thumbnailUrl = new URL(file.thumbnailLink);
+    } catch {
+        throw new GoogleDriveError('DRIVE_PREVIEW_UNAVAILABLE', 'A preview is not available for this file.');
+    }
+    if (thumbnailUrl.protocol !== 'https:' ||
+        (thumbnailUrl.hostname !== 'drive.google.com' && !thumbnailUrl.hostname.endsWith('.googleusercontent.com'))) {
+        throw new GoogleDriveError('DRIVE_PREVIEW_UNAVAILABLE', 'A preview is not available for this file.');
+    }
+
+    let response;
+    try {
+        response = await fetchDrive(thumbnailUrl);
+    } catch (error) {
+        if (error instanceof GoogleDriveError) throw error;
+        throw new GoogleDriveError('DRIVE_API_FAILED', 'Google Drive file preview failed due to a network error.', { stage: 'preview-thumbnail', failure: 'network' });
+    }
+    if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        throw classifyDriveResponse(response, data);
+    }
+    const mimeType = (response.headers.get('content-type') || '').split(';')[0].trim();
+    if (!mimeType.startsWith('image/')) {
+        throw new GoogleDriveError('DRIVE_PREVIEW_UNAVAILABLE', 'A preview is not available for this file.');
+    }
+    return { mimeType, content: Buffer.from(await response.arrayBuffer()) };
+}
+
+export async function renameDriveItem(itemId, parentFolderId, newName) {
+    const configurationError = getConfigurationError();
+    if (configurationError) throw configurationError;
+    const requestedItemId = String(itemId || '').trim();
+    const requestedParentId = String(parentFolderId || '').trim();
+    const safeName = String(newName || '').trim();
+    if (!requestedItemId || !requestedParentId) throw new GoogleDriveError('INVALID_REQUEST', 'An item ID and Notes Library parent folder ID are required.');
+    if (!safeName || safeName.length > 240 || /[\u0000-\u001f\u007f\\/:]/u.test(safeName)) {
+        throw new GoogleDriveError('INVALID_REQUEST', 'Choose a valid name of 1 to 240 characters without path separators.');
+    }
+
+    const accessToken = await getAccessToken();
+    const parent = await assertFolderWithinRoot(requestedParentId, accessToken);
+    const item = (await listChildren(parent.id, accessToken)).find((child) =>
+        child.id === requestedItemId &&
+        (child.mimeType === DRIVE_FOLDER_MIME_TYPE || SUPPORTED_NOTE_TYPES.has(child.mimeType))
+    );
+    if (!item) throw new GoogleDriveError('DRIVE_FILE_NOT_FOUND', 'The requested file or folder is not available in this Notes Library folder.');
+
+    const url = withSharedDriveOptions(new URL(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(item.id)}`));
+    url.searchParams.set('fields', 'id,name,mimeType,modifiedTime,thumbnailLink,size');
+    let response;
+    try {
+        response = await fetchDrive(url, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: safeName })
+        });
+    } catch (error) {
+        if (error instanceof GoogleDriveError) throw error;
+        throw new GoogleDriveError('DRIVE_API_FAILED', 'Google Drive rename failed due to a network error.', { stage: 'rename-item', failure: 'network' });
+    }
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw classifyDriveResponse(response, data, true);
+    return { ...data, type: item.mimeType === DRIVE_FOLDER_MIME_TYPE ? 'folder' : item.mimeType.startsWith('image/') ? 'image' : 'file' };
 }
 
 export async function deleteDriveFile(fileId, folderId) {

@@ -27,9 +27,11 @@ const {
     clearGoogleDriveToken,
     deleteDriveFile,
     exchangeGoogleDriveCode,
+    getDriveFileThumbnail,
     getGoogleDriveStatus,
     listDriveTopicFiles,
     listDriveFolderContents,
+    renameDriveItem,
     testGoogleDriveConnection,
     validateGoogleDriveConfig
 } = await import('./google-drive-service.mjs');
@@ -313,12 +315,16 @@ test('Drive lists direct child folders/files and handles permission and folder e
     const originalFetch = globalThis.fetch;
     let driveStatus = 403;
     const driveUrls = [];
+    const renameRequests = [];
     globalThis.fetch = async (url, options = {}) => {
         if (String(url).includes('oauth2.googleapis.com/token')) {
             return new Response(JSON.stringify({ access_token: 'test-access-token', expires_in: 3600 }), { status: 200 });
         }
         if (options.method === 'DELETE') return new Response(null, { status: 204 });
         const driveUrl = new URL(url);
+        if (driveUrl.hostname.endsWith('.googleusercontent.com')) {
+            return new Response(Buffer.from('preview-image'), { status: 200, headers: { 'Content-Type': 'image/png' } });
+        }
         driveUrls.push(driveUrl);
         if (driveStatus !== 200) {
             return new Response(JSON.stringify({ error: { message: driveStatus === 403 ? 'The caller does not have permission' : 'Folder not found' } }), { status: driveStatus });
@@ -332,6 +338,11 @@ test('Drive lists direct child folders/files and handles permission and folder e
             'sentences-id': { id: 'sentences-id', name: 'Sentences', mimeType: 'application/vnd.google-apps.folder', parents: ['english-id'] },
             'percent-topic': { id: 'percent-topic', name: 'Percentage', mimeType: 'application/vnd.google-apps.folder', parents: ['arithmetic-id'] }
         };
+        if (options.method === 'PATCH') {
+            const metadata = { id: driveUrl.pathname.split('/').at(-1), ...JSON.parse(options.body) };
+            renameRequests.push({ id: metadata.id, name: metadata.name });
+            return new Response(JSON.stringify({ ...metadata, mimeType: metadata.id === 'english-id' ? 'application/vnd.google-apps.folder' : 'application/pdf', modifiedTime: '2026-03-04T00:00:00Z' }), { status: 200 });
+        }
         const metadataMatch = driveUrl.pathname.match(/\/files\/([^/]+)$/);
         if (metadataMatch) {
             if (driveStatus !== 200) {
@@ -353,7 +364,7 @@ test('Drive lists direct child folders/files and handles permission and folder e
             'arithmetic-id': [{ id: 'percent-topic', name: 'Percentage', mimeType: 'application/vnd.google-apps.folder' }],
             'sentences-id': [
                 { id: 'sentence-pdf', name: 'Sentence Notes.pdf', mimeType: 'application/pdf', webViewLink: 'https://drive.google.test/sentence-pdf', size: '4096', modifiedTime: '2026-01-02T00:00:00Z' },
-                { id: 'sentence-image', name: 'Sentence Chart.webp', mimeType: 'image/webp', webViewLink: 'https://drive.google.test/sentence-image', thumbnailLink: 'https://drive.google.test/sentence-image-thumb' },
+                { id: 'sentence-image', name: 'Sentence Chart.webp', mimeType: 'image/webp', webViewLink: 'https://drive.google.test/sentence-image', thumbnailLink: 'https://lh3.googleusercontent.com/sentence-image-thumb' },
                 { id: 'unrelated-zip', name: 'archive.zip', mimeType: 'application/zip' }
             ],
             'percent-topic': []
@@ -397,6 +408,10 @@ test('Drive lists direct child folders/files and handles permission and folder e
         const subject = await listDriveFolderContents('english-id');
         assert.deepEqual(subject.folders.map((folder) => folder.name), ['Sentences']);
         assert.deepEqual(subject.files, []);
+        const subjectWithPreviews = await listDriveFolderContents('english-id', { includeFolderPreviews: true });
+        assert.deepEqual(subjectWithPreviews.folders[0].previewFiles.map((file) => file.id), ['sentence-pdf', 'sentence-image']);
+        assert.equal(subjectWithPreviews.folders[0].previewFileCount, 2);
+        assert.equal(subjectWithPreviews.folders[0].previewFolderCount, 0);
         const topic = await listDriveFolderContents('sentences-id');
         assert.deepEqual(topic.folders, []);
         assert.deepEqual(topic.files.map((file) => file.id), ['sentence-pdf', 'sentence-image']);
@@ -405,6 +420,21 @@ test('Drive lists direct child folders/files and handles permission and folder e
         assert.equal(topic.files[0].size, '4096');
         assert.equal(topic.files[0].modifiedTime, '2026-01-02T00:00:00Z');
         assert.equal(Object.hasOwn(topic.files[0], 'access_token'), false);
+        const thumbnail = await getDriveFileThumbnail('sentence-image', 'sentences-id');
+        assert.equal(thumbnail.mimeType, 'image/png');
+        assert.equal(thumbnail.content.toString(), 'preview-image');
+        const renamedFile = await renameDriveItem('sentence-pdf', 'sentences-id', 'Sentence Collection.pdf');
+        assert.equal(renamedFile.name, 'Sentence Collection.pdf');
+        assert.equal(renamedFile.type, 'file');
+        const renamedFolder = await renameDriveItem('english-id', 'test-notes-root', 'Language');
+        assert.equal(renamedFolder.name, 'Language');
+        assert.equal(renamedFolder.type, 'folder');
+        assert.deepEqual(renameRequests.map(({ id, name }) => ({ id, name })), [
+            { id: 'sentence-pdf', name: 'Sentence Collection.pdf' },
+            { id: 'english-id', name: 'Language' }
+        ]);
+        await assert.rejects(renameDriveItem('sentence-pdf', 'sentences-id', '../outside'), (error) => error.code === 'INVALID_REQUEST');
+        await assert.rejects(renameDriveItem('unrelated-zip', 'sentences-id', 'archive-renamed.zip'), (error) => error.code === 'DRIVE_FILE_NOT_FOUND');
         await assert.rejects(listDriveFolderContents('outside-folder'), (error) => error.code === 'DRIVE_FOLDER_NOT_FOUND');
         assert.deepEqual(await deleteDriveFile('sentence-pdf', 'sentences-id'), { id: 'sentence-pdf', deleted: true });
         await assert.rejects(deleteDriveFile('unrelated-zip', 'sentences-id'), (error) => error.code === 'DRIVE_FILE_NOT_FOUND');

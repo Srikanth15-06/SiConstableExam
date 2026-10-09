@@ -25,6 +25,6 @@ Google Drive tokens are encrypted with AES-256-GCM and stored in Supabase. No Go
 
 ## Access and Troubleshooting
 
-The existing Google account needs read access to the root. Folder creation, uploads, and deletes require Editor permission. The configured root must be a folder and is never changed by the app.
+The existing Google account needs read access to the root. Folder creation, renaming, uploads, and deletes require Editor permission. File and folder renaming is available to site administrators in the Notes Library. The configured root must be a folder and is never changed by the app.
 
 Check `/api/drive/status` for safe readiness booleans. `DRIVE_AUTH_FAILED` or `DRIVE_AUTH_REVOKED` means reconnect the existing Google account. `GOOGLE_REDIRECT_URI_MISMATCH` means the OAuth callback does not match the production URI above. `DRIVE_PERMISSION_DENIED` means the account lacks permission on the existing library. Supabase database failures affect account persistence and are reported by `/api/health`; they do not imply that Drive files were moved or deleted.

@@ -249,6 +249,7 @@ function getDriveErrorMessage(code, fallback = 'Google Drive notes could not be 
     FOLDER_ACCESS_FAILED: 'The connected Google account cannot access the configured Notes Library folder.',
     DRIVE_FOLDER_NOT_FOUND: 'The requested Google Drive folder was not found.',
     DRIVE_FILE_NOT_FOUND: 'The requested Google Drive file was not found in the Notes Library.',
+    DRIVE_PREVIEW_UNAVAILABLE: 'A preview is not available for this file.',
     DRIVE_API_NOT_ENABLED: 'Google Drive API is not enabled for the configured Google Cloud project.',
     DRIVE_RATE_LIMITED: 'Google Drive is receiving too many requests. Wait briefly and try again.',
     DRIVE_AUTH_REVOKED: 'The shared Notes Library is currently unavailable.',
@@ -348,12 +349,15 @@ export async function getDriveStatus() {
   return data;
 }
 
-export async function getDriveFolder(folderId) {
+export async function getDriveFolder(folderId, { includeFolderPreviews = false } = {}) {
   if (typeof folderId !== 'string' || !folderId.trim()) {
     throw new AIServiceError('A Google Drive folder ID is required.', { provider: 'Google Drive', code: 'INVALID_REQUEST' });
   }
   try {
-    const response = await fetch(apiUrl(`/api/drive/folders/${encodeURIComponent(folderId)}`), { credentials: 'include' });
+    const query = new URLSearchParams();
+    if (includeFolderPreviews) query.set('includeFolderPreviews', 'true');
+    const queryString = query.toString();
+    const response = await fetch(apiUrl(`/api/drive/folders/${encodeURIComponent(folderId)}${queryString ? `?${queryString}` : ''}`), { credentials: 'include' });
     const data = await response.json().catch(() => ({}));
     if (!response.ok || !Array.isArray(data.folders) || !Array.isArray(data.files)) {
       const reason = getDriveErrorMessage(data.code, data.message);
@@ -469,8 +473,36 @@ export async function deleteDriveFile(fileId, folderId) {
   return data;
 }
 
+export async function renameDriveItem(itemId, parentFolderId, name) {
+  const query = new URLSearchParams({ parentFolderId });
+  const response = await fetch(apiUrl(`/api/drive/items/${encodeURIComponent(itemId)}?${query}`), {
+    method: 'PATCH',
+    credentials: 'include',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name })
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data.success || !data.item) {
+    throw new AIServiceError(data.message || getDriveErrorMessage(data.code), {
+      provider: 'Google Drive', code: data.code || 'DRIVE_API_FAILED', requestId: data.requestId, status: response.status
+    });
+  }
+  return data.item;
+}
+
 export function getDriveFileContentUrl(topicFolderId, subjectFolderId, fileId, download = false) {
   const query = new URLSearchParams({ folderId: topicFolderId, parentFolderId: subjectFolderId });
   if (download) query.set('download', '1');
   return apiUrl(`/api/drive/files/${encodeURIComponent(fileId)}?${query}`);
+}
+
+export function getDriveFolderFileContentUrl(folderId, fileId, download = false) {
+  const query = new URLSearchParams({ folderId });
+  if (download) query.set('download', '1');
+  return apiUrl(`/api/drive/files/${encodeURIComponent(fileId)}?${query}`);
+}
+
+export function getDriveFolderFileThumbnailUrl(folderId, fileId) {
+  const query = new URLSearchParams({ folderId });
+  return apiUrl(`/api/drive/files/${encodeURIComponent(fileId)}/thumbnail?${query}`);
 }

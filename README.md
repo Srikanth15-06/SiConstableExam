@@ -22,7 +22,7 @@ This repository has two separately installed parts:
 - Export progress as CSV or JSON, print a profile report, and adjust browser-local text size and high-contrast preferences. Reviewed questions also offer AI-generated Telugu explanations.
 - Track topic progress and use the Smart Study Planner for revision and manual tasks.
 - Generate an AI-ranked full-syllabus schedule personalized to exam role, remaining days, daily study time, topic completion, accuracy, practice activity, and exam weightage. The schedule assigns every syllabus topic, adjusts session lengths when time is tight, and refreshes as progress changes.
-- Connect Google Drive to browse topic folders, preview or download notes, provision subject/topic folders, and upload supported files (up to 20 MB).
+- Connect Google Drive to browse folders with file/page thumbnails, preview or download notes, provision folders, upload supported files (up to 20 MB), and rename files or folders as a site administrator.
 - Secure candidate accounts with Supabase-backed sessions, progress, test history, planner data, and saved questions.
 
 ## Architecture and requests

@@ -5,7 +5,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { generateQuestions, generateNotes, generateChatReply, getAiStatus } from './ai-service.mjs';
-import { buildGoogleDriveAuthUrl, clearGoogleDriveToken, deleteDriveFile, exchangeGoogleDriveCode, getDriveFileContent, getGoogleDriveRootFolderId, getGoogleDriveStatus, getTopicFileContent, listDriveFolderContents, listDriveTopicFiles, provisionSubjectTopicFolders, testGoogleDriveConnection, uploadTopicFile, validateGoogleDriveConfig } from './google-drive-service.mjs';
+import { buildGoogleDriveAuthUrl, clearGoogleDriveToken, deleteDriveFile, exchangeGoogleDriveCode, getDriveFileContent, getDriveFileThumbnail, getGoogleDriveRootFolderId, getGoogleDriveStatus, getTopicFileContent, listDriveFolderContents, listDriveTopicFiles, provisionSubjectTopicFolders, renameDriveItem, testGoogleDriveConnection, uploadTopicFile, validateGoogleDriveConfig } from './google-drive-service.mjs';
 import { createAuthenticationRouter, createAuthenticationMiddleware } from './auth-service.mjs';
 import { createUserDataRouter } from './user-data-routes.mjs';
 import { describeAiFailure, sanitizeApiError } from './provider-manager.mjs';
@@ -407,7 +407,9 @@ app.get('/api/drive/folders', requireCandidateSession, async (_req, res) => {
 
 app.get('/api/drive/folders/:folderId', requireCandidateSession, async (req, res) => {
     try {
-        const contents = await listDriveFolderContents(req.params.folderId);
+        const contents = await listDriveFolderContents(req.params.folderId, {
+            includeFolderPreviews: req.query.includeFolderPreviews === 'true'
+        });
         res.json({ success: true, provider: 'googleDrive', ...contents });
     } catch (error) {
         sendGoogleDriveFailure(res, error);
@@ -519,6 +521,32 @@ app.get('/api/drive/files/:fileId', requireCandidateSession, async (req, res) =>
     try {
         const file = await getDriveFileContent(req.params.fileId, String(req.query.folderId || req.query.parentFolderId || ''));
         sendDriveFileContent(res, file, req.query.download === '1');
+    } catch (error) {
+        sendGoogleDriveFailure(res, error);
+    }
+});
+
+app.get('/api/drive/files/:fileId/thumbnail', requireCandidateSession, async (req, res) => {
+    try {
+        const thumbnail = await getDriveFileThumbnail(req.params.fileId, String(req.query.folderId || ''));
+        res.setHeader('Content-Type', thumbnail.mimeType);
+        res.setHeader('Content-Disposition', 'inline');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cache-Control', 'private, max-age=300');
+        res.send(thumbnail.content);
+    } catch (error) {
+        sendGoogleDriveFailure(res, error);
+    }
+});
+
+app.patch('/api/drive/items/:itemId', requireDriveAdmin, async (req, res) => {
+    try {
+        const result = await renameDriveItem(
+            req.params.itemId,
+            String(req.query.parentFolderId || ''),
+            req.body?.name
+        );
+        res.json({ success: true, provider: 'googleDrive', item: result });
     } catch (error) {
         sendGoogleDriveFailure(res, error);
     }
