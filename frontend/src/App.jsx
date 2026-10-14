@@ -3145,6 +3145,38 @@ export default function App() {
                     </div>
                   </header>
 
+                  <section aria-label="Quick Learning Videos" className="space-y-3 border-b border-slate-800 pb-6">
+                    <div>
+                      <h3 className="text-sm font-bold text-slate-100">Quick Learning Videos</h3>
+                      <p className="mt-1 text-xs text-slate-400">Learn {selectedTopic} with curated YouTube resources.</p>
+                    </div>
+                    {isLoadingLearningVideos && <p role="status" className="text-xs text-slate-400">Loading Learning Videos...</p>}
+                    {learningVideosError && <p role="status" className="text-xs text-amber-200">{learningVideosError}</p>}
+                    {!isLoadingLearningVideos && !learningVideosError && learningVideos.length === 0 && <p className="text-xs text-slate-500">No learning videos added yet.</p>}
+                    {learningVideos.length > 0 && (
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                        {learningVideos.map((video) => (
+                          <article key={video.id} className="overflow-hidden rounded-lg border border-slate-700 bg-slate-900/60">
+                            <img
+                              src={`https://img.youtube.com/vi/${encodeURIComponent(video.videoId)}/hqdefault.jpg`}
+                              alt=""
+                              loading="lazy"
+                              onError={(event) => { event.currentTarget.hidden = true; }}
+                              className="aspect-video w-full object-cover"
+                            />
+                            <div className="flex items-center justify-between gap-3 p-3">
+                              <h4 className="min-w-0 text-sm font-semibold text-slate-100">{video.title}</h4>
+                              <a href={video.youtubeUrl} target="_blank" rel="noopener noreferrer" className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-teal-700 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-600">
+                                <Play className="h-3.5 w-3.5" />
+                                Watch Video
+                              </a>
+                            </div>
+                          </article>
+                        ))}
+                      </div>
+                    )}
+                  </section>
+
                   <section aria-label="Google Drive notes for this topic" className="space-y-3 border-b border-slate-800 pb-6">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div>
@@ -3196,41 +3228,6 @@ export default function App() {
                           </button>
                         ))}
                       </div>
-                    )}
-                  </section>
-
-                  <section aria-label="Quick Learning Videos" className="space-y-3 border-b border-slate-800 pb-6">
-                    <div>
-                      <h3 className="text-sm font-bold text-slate-100">Quick Learning Videos</h3>
-                      <p className="mt-1 text-xs text-slate-400">Learn {selectedTopic} with curated YouTube resources.</p>
-                    </div>
-                    {isLoadingLearningVideos && <p role="status" className="text-xs text-slate-400">Loading Learning Videos...</p>}
-                    {learningVideosError && <p role="status" className="text-xs text-amber-200">{learningVideosError}</p>}
-                    {!isLoadingLearningVideos && !learningVideosError && learningVideos.length === 0 && <p className="text-xs text-slate-500">No learning videos added yet.</p>}
-                    {learningVideos.length > 0 && (
-                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                        {learningVideos.map((video) => (
-                          <article key={video.id} className="overflow-hidden rounded-lg border border-slate-700 bg-slate-900/60">
-                            <img
-                              src={`https://img.youtube.com/vi/${encodeURIComponent(video.videoId)}/hqdefault.jpg`}
-                              alt=""
-                              loading="lazy"
-                              onError={(event) => { event.currentTarget.hidden = true; }}
-                              className="aspect-video w-full object-cover"
-                            />
-                            <div className="flex items-center justify-between gap-3 p-3">
-                              <h4 className="min-w-0 text-sm font-semibold text-slate-100">{video.title}</h4>
-                              <button type="button" onClick={() => setActiveTopicVideo(video)} className="inline-flex shrink-0 items-center gap-1.5 rounded-md bg-teal-700 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-600">
-                                <Play className="h-3.5 w-3.5" />
-                                Play here
-                              </button>
-                            </div>
-                          </article>
-                        ))}
-                      </div>
-                    )}
-                    {activeTopicVideo && learningVideos.some((video) => video.id === activeTopicVideo.id) && (
-                      <YouTubeVideoPlayer video={activeTopicVideo} onClose={() => setActiveTopicVideo(null)} />
                     )}
                   </section>
 
