@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useEffectEvent, useRef } from 'react';
 import YouTubeVideoPlayer from './YouTubeVideoPlayer.jsx';
 import {
-  BookOpen, Folder, Download, FileText, Target, Clock, ChevronRight, BarChart2, User, Sparkles,
+  BookOpen, Folder, Download, FileText, Target, Clock, ChevronLeft, ChevronRight, BarChart2, User, Sparkles,
   ArrowLeft, Send, ShieldAlert, Play, X, Maximize2, Minimize2, Brain, Lock, Unlock, RotateCcw, Code, LogOut, Mail, KeyRound, UserPlus, RefreshCw,
   Volume2, VolumeX, CalendarDays, Pencil, Trash2
 } from 'lucide-react';
@@ -278,6 +278,7 @@ export default function App() {
   const [selectedSubject, setSelectedSubject] = useState(Object.keys(SUBJECT_TOPICS)[0] || '');
   const [selectedTopic, setSelectedTopic] = useState(SUBJECT_TOPICS[Object.keys(SUBJECT_TOPICS)[0]]?.[0] || '');
   const [showStudyNotes, setShowStudyNotes] = useState(false);
+  const [topicDriveNotesResult, setTopicDriveNotesResult] = useState(null);
   const [learningVideos, setLearningVideos] = useState([]);
   const [activeTopicVideo, setActiveTopicVideo] = useState(null);
   const [isLoadingLearningVideos, setIsLoadingLearningVideos] = useState(false);
@@ -430,6 +431,8 @@ export default function App() {
     groq: { activeKeyNumber: null, activeModel: null, lastSuccessful: false, available: false, configuredKeys: 0, configuredModels: 0 },
     openrouter: { activeKeyNumber: null, activeModel: null, lastSuccessful: false, available: false, configuredKeys: 0, configuredModels: 0 }
   });
+  const [drivePreviewFiles, setDrivePreviewFiles] = useState([]);
+  const [drivePreviewIndex, setDrivePreviewIndex] = useState(0);
   const [isDrivePreviewFullscreen, setIsDrivePreviewFullscreen] = useState(false);
   const [driveRenameItem, setDriveRenameItem] = useState(null);
   const [driveRenameValue, setDriveRenameValue] = useState('');
@@ -439,6 +442,12 @@ export default function App() {
   const drivePreviewContainerRef = useRef(null);
   const notesDoubtLogRef = useRef(null);
   const answerSaveTimerRef = useRef(null);
+  const topicDriveNotesKey = JSON.stringify([selectedExam, selectedSubject, selectedTopic]);
+  const topicDriveNotesLoaded = topicDriveNotesResult?.key === topicDriveNotesKey;
+  const topicDriveNotes = topicDriveNotesLoaded ? topicDriveNotesResult.files : [];
+  const topicDriveFolderId = topicDriveNotesLoaded ? topicDriveNotesResult.folderId : '';
+  const topicDriveNotesError = topicDriveNotesLoaded ? topicDriveNotesResult.error : '';
+  const isLoadingTopicDriveNotes = currentView === 'topic-detail' && Boolean(currentMember?.id) && !topicDriveNotesLoaded;
 
   useEffect(() => {
     const syncFullscreenState = () => {
@@ -603,6 +612,40 @@ export default function App() {
   }, [currentView, currentMember?.id, selectedExam, selectedSubject, selectedTopic]);
 
   useEffect(() => {
+    if (currentView !== 'topic-detail' || !currentMember?.id || !selectedSubject || !selectedTopic) return undefined;
+    let active = true;
+
+    getDriveTopicFiles({
+      exam: normalizeExamForRequest(selectedExam),
+      subject: selectedSubject,
+      topic: selectedTopic
+    })
+      .then((result) => {
+        if (!active) return;
+        setTopicDriveNotesResult({
+          key: topicDriveNotesKey,
+          files: result.files,
+          folderId: result.topicFolder.id,
+          error: ''
+        });
+      })
+      .catch((error) => {
+        if (!active) return;
+        const notFound = ['SUBJECT_FOLDER_NOT_FOUND', 'TOPIC_FOLDER_NOT_FOUND'].includes(error.code);
+        setTopicDriveNotesResult({
+          key: topicDriveNotesKey,
+          files: [],
+          folderId: '',
+          error: notFound ? '' : error.message || 'Google Drive notes could not be loaded.'
+        });
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [currentView, currentMember?.id, selectedExam, selectedSubject, selectedTopic, topicDriveNotesKey]);
+
+  useEffect(() => {
     if (currentView !== 'test' || !activeAttemptId) {
       focusAwayRef.current = false;
       clearTimeout(focusAwayTimerRef.current);
@@ -706,6 +749,8 @@ export default function App() {
     setDriveCurrentSubject('');
     setDriveCurrentTopic('');
     setDrivePreviewFile(null);
+    setDrivePreviewFiles([]);
+    setDrivePreviewIndex(0);
     setPlannerData(createEmptyPlannerState());
     setAiScheduleDailyMinutes(180);
     setAiStudySchedule(null);
@@ -1495,14 +1540,64 @@ export default function App() {
     }
   };
 
-  const handleOpenDriveFile = (file) => {
-    if (!driveCurrentFolderId) return;
-    setDrivePreviewFile({
+  const openDrivePreview = (files, folderId, fileId) => {
+    if (!folderId) return;
+    const previewFiles = files.map((file) => ({
       ...file,
-      contentUrl: getDriveFolderFileContentUrl(driveCurrentFolderId, file.id),
-      downloadUrl: getDriveFolderFileContentUrl(driveCurrentFolderId, file.id, true)
-    });
+      contentUrl: getDriveFolderFileContentUrl(folderId, file.id),
+      downloadUrl: getDriveFolderFileContentUrl(folderId, file.id, true)
+    }));
+    const index = previewFiles.findIndex((file) => file.id === fileId);
+    if (index < 0) return;
+    setDrivePreviewFiles(previewFiles);
+    setDrivePreviewIndex(index);
+    setDrivePreviewFile(previewFiles[index]);
   };
+
+  const handleOpenDriveFile = (file) => {
+    openDrivePreview(driveCurrentFiles, driveCurrentFolderId, file.id);
+  };
+
+  const handleOpenTopicDriveFile = (file) => {
+    openDrivePreview(topicDriveNotes, topicDriveFolderId, file.id);
+  };
+
+  const handleNavigateDrivePreview = (direction) => {
+    const nextIndex = drivePreviewIndex + direction;
+    if (nextIndex < 0 || nextIndex >= drivePreviewFiles.length) return;
+    setDrivePreviewIndex(nextIndex);
+    setDrivePreviewFile(drivePreviewFiles[nextIndex]);
+  };
+
+  const closeDrivePreview = () => {
+    setDrivePreviewFile(null);
+    setDrivePreviewFiles([]);
+    setDrivePreviewIndex(0);
+  };
+
+  useEffect(() => {
+    if (!drivePreviewFile || drivePreviewFiles.length < 2) return undefined;
+    const handlePreviewKeydown = (event) => {
+      if (['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target?.tagName) || event.target?.isContentEditable) return;
+      if (event.key === 'ArrowLeft') {
+        event.preventDefault();
+        const nextIndex = drivePreviewIndex - 1;
+        if (nextIndex >= 0) {
+          setDrivePreviewIndex(nextIndex);
+          setDrivePreviewFile(drivePreviewFiles[nextIndex]);
+        }
+      } else if (event.key === 'ArrowRight') {
+        event.preventDefault();
+        const nextIndex = drivePreviewIndex + 1;
+        if (nextIndex < drivePreviewFiles.length) {
+          setDrivePreviewIndex(nextIndex);
+          setDrivePreviewFile(drivePreviewFiles[nextIndex]);
+        }
+      }
+    };
+    window.addEventListener('keydown', handlePreviewKeydown);
+    return () => window.removeEventListener('keydown', handlePreviewKeydown);
+  }, [drivePreviewFile, drivePreviewFiles, drivePreviewIndex]);
 
   const handleStartDriveRename = (item, type) => {
     setDriveRenameItem({ id: item.id, name: item.name, type });
@@ -3039,7 +3134,7 @@ export default function App() {
                           className="inline-flex items-center gap-2 rounded-md border border-teal-500/40 bg-teal-500/10 px-3 py-2 text-xs font-semibold text-teal-200 hover:bg-teal-500/20 disabled:opacity-50"
                         >
                           <BookOpen className="h-4 w-4" />
-                          {isDriveNotesLoading ? 'Loading notes...' : 'View Notes'}
+                          {isDriveNotesLoading ? 'Loading notes...' : 'Browse Notes Library'}
                         </button>
                         {[selectedSubject, selectedTopic, normalizeExamForRequest(selectedExam), currentLearningLevel, 'AI Generated'].filter(Boolean).map((badge) => (
                           <span key={badge} className={`rounded-full border px-3 py-1.5 text-xs font-semibold ${badge === currentLearningLevel ? 'border-teal-500/40 bg-teal-500/10 text-teal-200' : 'border-slate-700 bg-slate-800 text-slate-300'}`}>
@@ -3049,6 +3144,60 @@ export default function App() {
                       </div>
                     </div>
                   </header>
+
+                  <section aria-label="Google Drive notes for this topic" className="space-y-3 border-b border-slate-800 pb-6">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <h3 className="text-sm font-bold text-slate-100">Notes &amp; files</h3>
+                        <p className="mt-1 text-xs text-slate-400">Files shared in the Google Drive folder for {selectedTopic}.</p>
+                      </div>
+                      {!isLoadingTopicDriveNotes && !topicDriveNotesError && topicDriveNotes.length > 0 && (
+                        <span className="rounded-full border border-teal-500/30 bg-teal-500/10 px-2.5 py-1 text-xs font-semibold text-teal-200">
+                          {topicDriveNotes.length} {topicDriveNotes.length === 1 ? 'file' : 'files'}
+                        </span>
+                      )}
+                    </div>
+                    {isLoadingTopicDriveNotes && <p role="status" className="text-xs text-slate-400">Loading topic notes...</p>}
+                    {topicDriveNotesError && <p role="alert" className="text-xs text-amber-200">{topicDriveNotesError}</p>}
+                    {topicDriveNotesLoaded && !isLoadingTopicDriveNotes && !topicDriveNotesError && topicDriveNotes.length === 0 && (
+                      <p className="rounded-lg border border-dashed border-slate-700 bg-slate-900/50 p-4 text-center text-sm text-slate-400">No notes found.</p>
+                    )}
+                    {!isLoadingTopicDriveNotes && !topicDriveNotesError && topicDriveNotes.length > 0 && (
+                      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                        {topicDriveNotes.map((file) => (
+                          <button
+                            key={file.id}
+                            type="button"
+                            onClick={() => handleOpenTopicDriveFile(file)}
+                            aria-label={`Open ${file.name}`}
+                            className="group min-w-0 overflow-hidden rounded-lg border border-slate-700 bg-slate-900/70 text-left transition hover:border-teal-500/70 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-teal-400"
+                          >
+                            <span className="relative flex h-36 items-center justify-center overflow-hidden bg-slate-950">
+                              <img
+                                src={getDriveFolderFileThumbnailUrl(topicDriveFolderId, file.id)}
+                                alt={`${file.name} preview`}
+                                loading="lazy"
+                                className="h-full w-full object-contain"
+                                onError={(event) => {
+                                  event.currentTarget.hidden = true;
+                                  event.currentTarget.nextElementSibling?.classList.remove('hidden');
+                                  event.currentTarget.nextElementSibling?.classList.add('flex');
+                                }}
+                              />
+                              <span className="hidden flex-col items-center gap-2 text-slate-400">
+                                <FileText className="h-10 w-10 text-teal-300" aria-hidden="true" />
+                                <span className="text-xs">Open file</span>
+                              </span>
+                            </span>
+                            <span className="block min-w-0 p-3">
+                              <span className="block truncate text-sm font-semibold text-slate-100 group-hover:text-teal-200">{file.name}</span>
+                              <span className="mt-1 block text-xs text-slate-400">{fileMimeLabel(file.mimeType)}</span>
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </section>
 
                   <section aria-label="Quick Learning Videos" className="space-y-3 border-b border-slate-800 pb-6">
                     <div>
@@ -4179,7 +4328,7 @@ export default function App() {
               )}
 
               {drivePreviewFile && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-6" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && setDrivePreviewFile(null)}>
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-6" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDrivePreview()}>
                   <section
                     ref={drivePreviewContainerRef}
                     role="dialog"
@@ -4191,6 +4340,31 @@ export default function App() {
                       <div className="min-w-0 flex-1">
                         <h3 id="drive-preview-title" className="truncate text-sm font-bold text-white">{drivePreviewFile.name}</h3>
                         <p className="mt-0.5 truncate text-xs text-slate-400">{fileMimeLabel(drivePreviewFile.mimeType)}</p>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleNavigateDrivePreview(-1)}
+                          disabled={drivePreviewIndex === 0}
+                          aria-label="Previous file"
+                          title="Previous file (Left arrow)"
+                          className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <ChevronLeft className="h-4 w-4" />
+                        </button>
+                        <span aria-live="polite" className="min-w-10 text-center text-[11px] tabular-nums text-slate-400">
+                          {drivePreviewIndex + 1} / {drivePreviewFiles.length}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleNavigateDrivePreview(1)}
+                          disabled={drivePreviewIndex >= drivePreviewFiles.length - 1}
+                          aria-label="Next file"
+                          title="Next file (Right arrow)"
+                          className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                        >
+                          <ChevronRight className="h-4 w-4" />
+                        </button>
                       </div>
                       <a href={drivePreviewFile.downloadUrl} download={drivePreviewFile.name} className="inline-flex items-center gap-2 rounded-md bg-teal-600 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-500">
                         <Download className="h-4 w-4" />
@@ -4204,7 +4378,7 @@ export default function App() {
                       >
                         {isDrivePreviewFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
                       </button>
-                      <button onClick={() => setDrivePreviewFile(null)} aria-label="Close file preview" className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white">
+                      <button onClick={closeDrivePreview} aria-label="Close file preview" className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white">
                         <X className="h-4 w-4" />
                       </button>
                     </header>
