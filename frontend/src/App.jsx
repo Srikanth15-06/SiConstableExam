@@ -4324,102 +4324,6 @@ export default function App() {
                 <p className="py-4 text-sm text-slate-400">No folders or files in this folder.</p>
               )}
 
-              {drivePreviewFile && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-6" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDrivePreview()}>
-                  <section
-                    ref={drivePreviewContainerRef}
-                    role="dialog"
-                    aria-modal="true"
-                    aria-labelledby="drive-preview-title"
-                    className={`flex w-full flex-col overflow-hidden border border-slate-700 bg-slate-900 shadow-2xl ${isDrivePreviewFullscreen ? 'h-screen max-h-screen max-w-none rounded-none border-0' : 'h-[88vh] max-h-[92vh] max-w-5xl rounded-lg'}`}
-                  >
-                    <header className="flex items-center gap-3 border-b border-slate-700 px-4 py-3">
-                      <div className="min-w-0 flex-1">
-                        <h3 id="drive-preview-title" className="truncate text-sm font-bold text-white">{drivePreviewFile.name}</h3>
-                        <p className="mt-0.5 truncate text-xs text-slate-400">{fileMimeLabel(drivePreviewFile.mimeType)}</p>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1">
-                        <button
-                          type="button"
-                          onClick={() => handleNavigateDrivePreview(-1)}
-                          disabled={drivePreviewIndex === 0}
-                          aria-label="Previous file"
-                          title="Previous file (Left arrow)"
-                          className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          <ChevronLeft className="h-4 w-4" />
-                        </button>
-                        <span aria-live="polite" className="min-w-10 text-center text-[11px] tabular-nums text-slate-400">
-                          {drivePreviewIndex + 1} / {drivePreviewFiles.length}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={() => handleNavigateDrivePreview(1)}
-                          disabled={drivePreviewIndex >= drivePreviewFiles.length - 1}
-                          aria-label="Next file"
-                          title="Next file (Right arrow)"
-                          className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
-                        >
-                          <ChevronRight className="h-4 w-4" />
-                        </button>
-                      </div>
-                      <a href={drivePreviewFile.downloadUrl} download={drivePreviewFile.name} className="inline-flex items-center gap-2 rounded-md bg-teal-600 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-500">
-                        <Download className="h-4 w-4" />
-                        Download
-                      </a>
-                      <button
-                        onClick={handleToggleDrivePreviewFullscreen}
-                        aria-label={isDrivePreviewFullscreen ? 'Exit full screen' : 'View full screen'}
-                        title={isDrivePreviewFullscreen ? 'Exit full screen' : 'View full screen'}
-                        className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white"
-                      >
-                        {isDrivePreviewFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
-                      </button>
-                      <button onClick={closeDrivePreview} aria-label="Close file preview" className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white">
-                        <X className="h-4 w-4" />
-                      </button>
-                    </header>
-                    {isDriveBrowserPreviewable(drivePreviewFile.mimeType) ? (
-                      <iframe title={`Preview: ${drivePreviewFile.name}`} src={drivePreviewFile.contentUrl} className="min-h-0 flex-1 bg-slate-950" />
-                    ) : (
-                      <div className="flex min-h-72 flex-col items-center justify-center gap-3 p-8 text-center">
-                        <FileText className="h-10 w-10 text-slate-500" />
-                        <p className="text-sm font-semibold text-slate-200">This document format cannot be previewed in the browser.</p>
-                        <p className="text-xs text-slate-400">Download it here without leaving the Notes Library.</p>
-                      </div>
-                    )}
-
-                    {driveRenameItem && (
-                      <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !isDriveRenaming && setDriveRenameItem(null)}>
-                        <section role="dialog" aria-modal="true" aria-labelledby="drive-rename-title" className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
-                          <div className="mb-4 flex items-center gap-3">
-                            <Pencil className="h-5 w-5 text-teal-300" aria-hidden="true" />
-                            <h3 id="drive-rename-title" className="text-base font-bold text-white">Rename {driveRenameItem.type}</h3>
-                          </div>
-                          <form onSubmit={handleRenameDriveItem} className="space-y-4">
-                            <label htmlFor="drive-rename-value" className="block text-sm font-semibold text-slate-300">
-                              Name
-                              <input
-                                id="drive-rename-value"
-                                autoFocus
-                                maxLength={240}
-                                value={driveRenameValue}
-                                onChange={(event) => setDriveRenameValue(event.target.value)}
-                                className="mt-1 w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-teal-500"
-                              />
-                            </label>
-                            {driveRenameError && <p role="alert" className="text-sm text-rose-300">{driveRenameError}</p>}
-                            <div className="flex justify-end gap-2">
-                              <button type="button" onClick={() => setDriveRenameItem(null)} disabled={isDriveRenaming} className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-50">Cancel</button>
-                              <button type="submit" disabled={!driveRenameValue.trim() || isDriveRenaming} className="rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-500 disabled:opacity-50">{isDriveRenaming ? 'Saving...' : 'Save name'}</button>
-                            </div>
-                          </form>
-                        </section>
-                      </div>
-                    )}
-                  </section>
-                </div>
-              )}
             </div>
           )}
 
@@ -4877,6 +4781,103 @@ export default function App() {
           )}
         </main>
       </div>
+
+      {drivePreviewFile && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-3 sm:p-6" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && closeDrivePreview()}>
+          <section
+            ref={drivePreviewContainerRef}
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="drive-preview-title"
+            className={`flex w-full flex-col overflow-hidden border border-slate-700 bg-slate-900 shadow-2xl ${isDrivePreviewFullscreen ? 'h-screen max-h-screen max-w-none rounded-none border-0' : 'h-[88vh] max-h-[92vh] max-w-5xl rounded-lg'}`}
+          >
+            <header className="flex items-center gap-3 border-b border-slate-700 px-4 py-3">
+              <div className="min-w-0 flex-1">
+                <h3 id="drive-preview-title" className="truncate text-sm font-bold text-white">{drivePreviewFile.name}</h3>
+                <p className="mt-0.5 truncate text-xs text-slate-400">{fileMimeLabel(drivePreviewFile.mimeType)}</p>
+              </div>
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => handleNavigateDrivePreview(-1)}
+                  disabled={drivePreviewIndex === 0}
+                  aria-label="Previous file"
+                  title="Previous file (Left arrow)"
+                  className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                </button>
+                <span aria-live="polite" className="min-w-10 text-center text-[11px] tabular-nums text-slate-400">
+                  {drivePreviewIndex + 1} / {drivePreviewFiles.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleNavigateDrivePreview(1)}
+                  disabled={drivePreviewIndex >= drivePreviewFiles.length - 1}
+                  aria-label="Next file"
+                  title="Next file (Right arrow)"
+                  className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+              <a href={drivePreviewFile.downloadUrl} download={drivePreviewFile.name} className="inline-flex items-center gap-2 rounded-md bg-teal-600 px-3 py-2 text-xs font-semibold text-white hover:bg-teal-500">
+                <Download className="h-4 w-4" />
+                Download
+              </a>
+              <button
+                onClick={handleToggleDrivePreviewFullscreen}
+                aria-label={isDrivePreviewFullscreen ? 'Exit full screen' : 'View full screen'}
+                title={isDrivePreviewFullscreen ? 'Exit full screen' : 'View full screen'}
+                className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white"
+              >
+                {isDrivePreviewFullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+              </button>
+              <button onClick={closeDrivePreview} aria-label="Close file preview" className="rounded-md p-2 text-slate-300 hover:bg-slate-800 hover:text-white">
+                <X className="h-4 w-4" />
+              </button>
+            </header>
+            {isDriveBrowserPreviewable(drivePreviewFile.mimeType) ? (
+              <iframe title={`Preview: ${drivePreviewFile.name}`} src={drivePreviewFile.contentUrl} className="min-h-0 flex-1 bg-slate-950" />
+            ) : (
+              <div className="flex min-h-72 flex-col items-center justify-center gap-3 p-8 text-center">
+                <FileText className="h-10 w-10 text-slate-500" />
+                <p className="text-sm font-semibold text-slate-200">This document format cannot be previewed in the browser.</p>
+                <p className="text-xs text-slate-400">Download the file to open it in a compatible app.</p>
+              </div>
+            )}
+
+            {driveRenameItem && (
+              <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/75 p-4" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && !isDriveRenaming && setDriveRenameItem(null)}>
+                <section role="dialog" aria-modal="true" aria-labelledby="drive-rename-title" className="w-full max-w-md rounded-xl border border-slate-700 bg-slate-900 p-5 shadow-2xl">
+                  <div className="mb-4 flex items-center gap-3">
+                    <Pencil className="h-5 w-5 text-teal-300" aria-hidden="true" />
+                    <h3 id="drive-rename-title" className="text-base font-bold text-white">Rename {driveRenameItem.type}</h3>
+                  </div>
+                  <form onSubmit={handleRenameDriveItem} className="space-y-4">
+                    <label htmlFor="drive-rename-value" className="block text-sm font-semibold text-slate-300">
+                      Name
+                      <input
+                        id="drive-rename-value"
+                        autoFocus
+                        maxLength={240}
+                        value={driveRenameValue}
+                        onChange={(event) => setDriveRenameValue(event.target.value)}
+                        className="mt-1 w-full rounded-md border border-slate-600 bg-slate-950 px-3 py-2 text-sm text-white outline-none focus:border-teal-500"
+                      />
+                    </label>
+                    {driveRenameError && <p role="alert" className="text-sm text-rose-300">{driveRenameError}</p>}
+                    <div className="flex justify-end gap-2">
+                      <button type="button" onClick={() => setDriveRenameItem(null)} disabled={isDriveRenaming} className="rounded-md border border-slate-700 px-3 py-2 text-sm text-slate-300 hover:bg-slate-800 disabled:opacity-50">Cancel</button>
+                      <button type="submit" disabled={!driveRenameValue.trim() || isDriveRenaming} className="rounded-md bg-teal-600 px-3 py-2 text-sm font-semibold text-white hover:bg-teal-500 disabled:opacity-50">{isDriveRenaming ? 'Saving...' : 'Save name'}</button>
+                    </div>
+                  </form>
+                </section>
+              </div>
+            )}
+          </section>
+        </div>
+      )}
 
       {/* SUBMIT CONFIRMATION MODAL */}
       {isSubmitModalOpen && (
