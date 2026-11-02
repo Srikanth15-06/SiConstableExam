@@ -4722,7 +4722,7 @@ export default function App() {
                               </div>
                             )}
                           </div>
-                        </article>
+                        </div>
                       ))}
                     </div>
                   </div>
