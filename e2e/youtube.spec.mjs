@@ -115,6 +115,10 @@ test('@desktop @mobile @tablet YouTube study explorer filters, watch later, play
     await firstVideo.click();
     const player = page.getByRole('dialog');
     await expect(player).toBeVisible();
+    const previousVideoButton = page.getByRole('button', { name: 'Previous video' });
+    const nextVideoButton = page.getByRole('button', { name: 'Next video' });
+    await expect(previousVideoButton).toBeDisabled();
+    await expect(nextVideoButton).toBeEnabled();
     const iframe = player.locator('iframe');
     await expect(iframe).toHaveAttribute('src', /youtube-nocookie\.com\/embed\/abcdefghijk/);
     await expect(iframe).toHaveAttribute('allowfullscreen', '');
@@ -122,7 +126,35 @@ test('@desktop @mobile @tablet YouTube study explorer filters, watch later, play
     await expect(page).toHaveURL(/\/youtube$/);
     await expect(page.locator('a[href*="youtube.com"]')).toHaveCount(0);
     expect(context.pages()).toHaveLength(1);
-    await page.getByRole('button', { name: 'Close video player' }).last().click();
+    await nextVideoButton.click();
+    await expect(iframe).toHaveAttribute('src', /youtube-nocookie\.com\/embed\/lmnopqrstuv/);
+    await nextVideoButton.click();
+    await expect(iframe).toHaveAttribute('src', /youtube-nocookie\.com\/embed\/zyxwvutsrq0/);
+    await expect(previousVideoButton).toBeEnabled();
+    await expect(nextVideoButton).toBeDisabled();
+    await previousVideoButton.click();
+    await expect(iframe).toHaveAttribute('src', /youtube-nocookie\.com\/embed\/lmnopqrstuv/);
+    await previousVideoButton.click();
+    await expect(iframe).toHaveAttribute('src', /youtube-nocookie\.com\/embed\/abcdefghijk/);
+
+    await page.getByRole('button', { name: 'Float video player' }).click();
+    await expect(player).toHaveAttribute('aria-modal', 'false');
+    const requestsBeforeBrowsingWithFloatingPlayer = requests.length;
+    await search.fill('Keep studying');
+    expect(requests).toHaveLength(requestsBeforeBrowsingWithFloatingPlayer);
+    await search.fill('React tutorials');
+    await expect(page.getByRole('button', { name: 'Dock video player' })).toBeVisible();
+    await nextVideoButton.click();
+    await expect(iframe).toHaveAttribute('src', /youtube-nocookie\.com\/embed\/lmnopqrstuv/);
+    await nextVideoButton.click();
+    await expect(iframe).toHaveAttribute('src', /youtube-nocookie\.com\/embed\/zyxwvutsrq0/);
+    await page.getByRole('button', { name: 'Dock video player' }).click();
+    await expect(player).toHaveAttribute('aria-modal', 'true');
+    await player.getByRole('button', { name: 'Close video player' }).click();
+    await expect(player).toHaveCount(0);
+    await firstVideo.click();
+    await expect(player).toHaveAttribute('aria-modal', 'true');
+    await player.getByRole('button', { name: 'Close video player' }).click();
     await expect(player).toHaveCount(0);
 
     await page.getByLabel('Video length').selectOption('short');

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, Bookmark, Check, Clock3, LoaderCircle, Play, Search, X } from 'lucide-react';
+import { ArrowLeft, Bookmark, Check, ChevronLeft, ChevronRight, Clock3, LoaderCircle, Minimize2, PictureInPicture2, Play, Search, X } from 'lucide-react';
 import { searchYouTubeVideos } from './services/aiService.js';
 import './YouTubeExplorer.css';
 
@@ -60,12 +60,18 @@ export default function YouTubeExplorer({ onNavigate }) {
   const [hasSearched, setHasSearched] = useState(false);
   const [error, setError] = useState('');
   const [selectedVideo, setSelectedVideo] = useState(null);
+  const [isPlayerFloating, setIsPlayerFloating] = useState(false);
   const [storageError, setStorageError] = useState(watchLater.error);
   const searchRequestRef = useRef(null);
   const moreRequestRef = useRef(null);
 
   function updateQuery(value) {
     setQuery(value);
+  }
+
+  function closePlayer() {
+    setSelectedVideo(null);
+    setIsPlayerFloating(false);
   }
 
   useEffect(() => {
@@ -78,16 +84,16 @@ export default function YouTubeExplorer({ onNavigate }) {
   useEffect(() => {
     if (!selectedVideo) return undefined;
     const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    if (!isPlayerFloating) document.body.style.overflow = 'hidden';
     const closeOnEscape = (event) => {
-      if (event.key === 'Escape') setSelectedVideo(null);
+      if (event.key === 'Escape') closePlayer();
     };
     window.addEventListener('keydown', closeOnEscape);
     return () => {
-      document.body.style.overflow = previousOverflow;
+      if (!isPlayerFloating) document.body.style.overflow = previousOverflow;
       window.removeEventListener('keydown', closeOnEscape);
     };
-  }, [selectedVideo]);
+  }, [isPlayerFloating, selectedVideo]);
 
   async function runSearch(searchQuery = query) {
     const requestedQuery = searchQuery.normalize('NFKC').trim();
@@ -188,6 +194,7 @@ export default function YouTubeExplorer({ onNavigate }) {
     .map((video) => [video.channelId, { id: video.channelId, name: video.channelName }])).values()]
     .sort((left, right) => left.name.localeCompare(right.name));
   const visibleVideos = sourceVideos.filter((video) => !channelFilter || video.channelId === channelFilter);
+  const selectedVideoIndex = visibleVideos.findIndex((video) => video.videoId === selectedVideo?.videoId);
   const savedVideoIds = new Set(watchLater.videos.map((video) => video.videoId));
 
   return (
@@ -397,20 +404,61 @@ export default function YouTubeExplorer({ onNavigate }) {
       </main>
 
       {selectedVideo && (
-        <div className="yt-player-layer">
-          <button type="button" className="yt-player-backdrop" aria-label="Close video player" onClick={() => setSelectedVideo(null)} />
-          <section className="yt-player-dialog" role="dialog" aria-modal="true" aria-labelledby="yt-player-title">
+        <div className={`yt-player-layer${isPlayerFloating ? ' yt-player-layer--floating' : ''}`}>
+          {!isPlayerFloating && (
+            <button type="button" className="yt-player-backdrop" aria-label="Close video player" onClick={closePlayer} />
+          )}
+          <section className="yt-player-dialog" role="dialog" aria-modal={!isPlayerFloating} aria-labelledby="yt-player-title">
             <div className="yt-player-heading">
               <div>
                 <h2 id="yt-player-title">{selectedVideo.title}</h2>
                 <p>{selectedVideo.channelName}</p>
               </div>
-              <button type="button" className="yt-close-player" aria-label="Close video player" onClick={() => setSelectedVideo(null)}>
+              <button type="button" className="yt-close-player" aria-label="Close video player" onClick={closePlayer}>
                 <X size={21} aria-hidden="true" />
+              </button>
+            </div>
+            <div className="yt-player-controls" aria-label="Video playback navigation">
+              <button
+                type="button"
+                className="yt-player-control"
+                aria-label="Previous video"
+                onClick={() => {
+                  if (selectedVideoIndex > 0) setSelectedVideo(visibleVideos[selectedVideoIndex - 1]);
+                }}
+                disabled={selectedVideoIndex <= 0}
+              >
+                <ChevronLeft size={18} aria-hidden="true" />
+                <span>Previous</span>
+              </button>
+              <button
+                type="button"
+                className="yt-player-control"
+                aria-label="Next video"
+                onClick={() => {
+                  if (selectedVideoIndex >= 0 && selectedVideoIndex < visibleVideos.length - 1) {
+                    setSelectedVideo(visibleVideos[selectedVideoIndex + 1]);
+                  }
+                }}
+                disabled={selectedVideoIndex < 0 || selectedVideoIndex >= visibleVideos.length - 1}
+              >
+                <span>Next</span>
+                <ChevronRight size={18} aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                className="yt-player-control yt-player-float-toggle"
+                aria-label={isPlayerFloating ? 'Dock video player' : 'Float video player'}
+                aria-pressed={isPlayerFloating}
+                onClick={() => setIsPlayerFloating((isFloating) => !isFloating)}
+              >
+                {isPlayerFloating ? <Minimize2 size={16} aria-hidden="true" /> : <PictureInPicture2 size={16} aria-hidden="true" />}
+                <span>{isPlayerFloating ? 'Dock player' : 'Float player'}</span>
               </button>
             </div>
             <div className="yt-player-frame">
               <iframe
+                key={selectedVideo.videoId}
                 src={`https://www.youtube-nocookie.com/embed/${encodeURIComponent(selectedVideo.videoId)}?autoplay=1&rel=0`}
                 title={`${selectedVideo.title} — YouTube video player`}
                 allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
