@@ -89,6 +89,7 @@ export function createYouTubeSearchHandler({
         const pageToken = req.query.pageToken === undefined ? '' : req.query.pageToken;
         const duration = req.query.duration === undefined ? 'any' : req.query.duration;
         const order = req.query.order === undefined ? 'relevance' : req.query.order;
+        const language = req.query.language === undefined ? 'all' : req.query.language;
         if (!query || Array.from(query).length > 100 || /[\u0000-\u001F\u007F]/.test(query)) {
             sendFailure(res, 400, 'INVALID_YOUTUBE_QUERY', 'Enter a search query of 1 to 100 characters.');
             return;
@@ -105,6 +106,10 @@ export function createYouTubeSearchHandler({
             sendFailure(res, 400, 'INVALID_YOUTUBE_ORDER', 'Choose a valid video sort order.');
             return;
         }
+        if (!['all', 'te', 'hi', 'en'].includes(language)) {
+            sendFailure(res, 400, 'INVALID_YOUTUBE_LANGUAGE', 'Choose Telugu, Hindi, English, or all languages.');
+            return;
+        }
 
         const configuredApiKey = String(apiKey || '').trim();
         if (!configuredApiKey) {
@@ -112,7 +117,7 @@ export function createYouTubeSearchHandler({
             return;
         }
 
-        const cacheKey = `${query.toLowerCase()}\n${pageToken}\n${duration}\n${order}`;
+        const cacheKey = `${query.toLowerCase()}\n${pageToken}\n${duration}\n${order}\n${language}`;
         const cached = getCachedSearch(cache, cacheKey, now());
         if (cached) {
             res.json({ success: true, ...cached });
@@ -130,6 +135,7 @@ export function createYouTubeSearchHandler({
             order,
             maxResults: '12',
             q: query,
+            ...(language !== 'all' ? { relevanceLanguage: language } : {}),
             ...(pageToken ? { pageToken } : {})
         }).toString();
 

@@ -32,11 +32,12 @@ async function requestCandidateApi(path, { method = 'GET', body, headers = {} } 
   return data;
 }
 
-export async function searchYouTubeVideos(query, pageToken = '', { signal, duration = 'any', order = 'relevance' } = {}) {
+export async function searchYouTubeVideos(query, pageToken = '', { signal, duration = 'any', order = 'relevance', language = 'all' } = {}) {
   const params = new URLSearchParams({ q: query });
   if (pageToken) params.set('pageToken', pageToken);
   if (duration !== 'any') params.set('duration', duration);
   if (order !== 'relevance') params.set('order', order);
+  if (language !== 'all') params.set('language', language);
 
   let response;
   try {

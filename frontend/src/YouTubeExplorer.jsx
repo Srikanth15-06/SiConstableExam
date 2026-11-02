@@ -48,9 +48,11 @@ export default function YouTubeExplorer({ onNavigate }) {
   const [submittedQuery, setSubmittedQuery] = useState('');
   const [submittedDuration, setSubmittedDuration] = useState('any');
   const [submittedOrder, setSubmittedOrder] = useState('relevance');
+  const [submittedLanguage, setSubmittedLanguage] = useState('all');
   const [nextPageToken, setNextPageToken] = useState('');
   const [duration, setDuration] = useState('any');
   const [order, setOrder] = useState('relevance');
+  const [language, setLanguage] = useState('all');
   const [channelFilter, setChannelFilter] = useState('');
   const [activeCollection, setActiveCollection] = useState('search');
   const [isLoading, setIsLoading] = useState(false);
@@ -111,13 +113,15 @@ export default function YouTubeExplorer({ onNavigate }) {
     setSubmittedQuery(requestedQuery);
     setSubmittedDuration(duration);
     setSubmittedOrder(order);
+    setSubmittedLanguage(language);
     setHasSearched(true);
     setIsLoading(true);
     try {
       const result = await searchYouTubeVideos(requestedQuery, '', {
         signal: controller.signal,
         duration,
-        order
+        order,
+        language
       });
       if (!controller.signal.aborted) {
         setVideos(result.videos);
@@ -161,7 +165,8 @@ export default function YouTubeExplorer({ onNavigate }) {
       const result = await searchYouTubeVideos(requestedQuery, nextPageToken, {
         signal: controller.signal,
         duration: submittedDuration,
-        order: submittedOrder
+        order: submittedOrder,
+        language: submittedLanguage
       });
       if (!controller.signal.aborted && requestedQuery === query.normalize('NFKC').trim()) {
         setVideos((currentVideos) => {
@@ -247,8 +252,17 @@ export default function YouTubeExplorer({ onNavigate }) {
                 <option value="viewCount">Most viewed</option>
               </select>
             </label>
+            <label>
+              <span>Language</span>
+              <select aria-label="Video language" value={language} onChange={(event) => setLanguage(event.target.value)}>
+                <option value="all">All languages</option>
+                <option value="te">Telugu</option>
+                <option value="hi">Hindi</option>
+                <option value="en">English</option>
+              </select>
+            </label>
           </div>
-          <p className="yt-search-hint">Search results are limited to YouTube’s Education category. Filters apply when you search.</p>
+          <p className="yt-search-hint">Search results are limited to YouTube’s Education category. Language is a YouTube relevance preference; filters apply when you search.</p>
           <div className="yt-related-searches" aria-label="Suggested study searches">
             <span>Popular study searches</span>
             {RELATED_SEARCHES.map((search) => (

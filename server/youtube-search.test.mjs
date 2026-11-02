@@ -36,7 +36,8 @@ test('YouTube search validates query and page token before calling Google', asyn
         { q: 'react', pageToken: 'invalid token' },
         { q: 'react', pageToken: 'x'.repeat(513) },
         { q: 'react', duration: 'extreme' },
-        { q: 'react', order: 'random' }
+        { q: 'react', order: 'random' },
+        { q: 'react', language: 'fr' }
     ]) {
         const response = createResponseRecorder();
         await handler(createRequest(query), response);
@@ -116,7 +117,7 @@ test('YouTube search requests embeddable videos and maps public snippet fields',
     });
 });
 
-test('YouTube search caches successful pages by query and token', async () => {
+test('YouTube search caches successful pages by query, token, and language', async () => {
     let searchRequests = 0;
     const handler = createYouTubeSearchHandler({
         apiKey: 'test-key',
@@ -130,10 +131,12 @@ test('YouTube search caches successful pages by query and token', async () => {
 
     const first = createResponseRecorder();
     const second = createResponseRecorder();
+    const differentLanguage = createResponseRecorder();
     await handler(createRequest({ q: 'Python tutorials' }), first);
     await handler(createRequest({ q: 'python tutorials' }), second);
+    await handler(createRequest({ q: 'python tutorials', language: 'te' }), differentLanguage);
 
-    assert.equal(searchRequests, 1);
+    assert.equal(searchRequests, 2);
     assert.deepEqual(second.body, first.body);
 });
 
@@ -156,6 +159,30 @@ test('YouTube search validates category filters and forwards duration and order'
     assert.equal(requestedUrl.searchParams.get('videoCategoryId'), '27');
     assert.equal(requestedUrl.searchParams.get('videoDuration'), 'long');
     assert.equal(requestedUrl.searchParams.get('order'), 'date');
+});
+
+test('YouTube search forwards supported language preferences and omits all languages', async () => {
+    const requestedUrls = [];
+    const handler = createYouTubeSearchHandler({
+        apiKey: 'test-key',
+        cache: new Map(),
+        fetchImpl: async (url) => {
+            requestedUrls.push(new URL(url));
+            return { ok: true, status: 200, json: async () => ({ items: [] }) };
+        },
+        logger: { error() {} }
+    });
+
+    for (const language of ['te', 'hi', 'en', 'all']) {
+        const response = createResponseRecorder();
+        await handler(createRequest({ q: 'Telangana GK', language }), response);
+        assert.equal(response.statusCode, 200);
+    }
+
+    assert.deepEqual(
+        requestedUrls.map((url) => url.searchParams.get('relevanceLanguage')),
+        ['te', 'hi', 'en', null]
+    );
 });
 
 test('YouTube search reports missing configuration without making an upstream request', async () => {

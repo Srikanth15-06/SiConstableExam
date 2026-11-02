@@ -15,7 +15,8 @@ test('@desktop @mobile @tablet YouTube study explorer filters, watch later, play
             query,
             pageToken,
             duration: url.searchParams.get('duration'),
-            order: url.searchParams.get('order')
+            order: url.searchParams.get('order'),
+            language: url.searchParams.get('language')
         });
         if (query === 'quota test') {
             await route.fulfill({
@@ -86,6 +87,7 @@ test('@desktop @mobile @tablet YouTube study explorer filters, watch later, play
     await expect(page.getByRole('heading', { name: 'Explore YouTube' })).toBeVisible();
     await expect(page.getByText('What would you like to watch?')).toBeVisible();
     await expect(page.getByText('Education category', { exact: false })).toBeVisible();
+    await expect(page.getByLabel('Video language')).toHaveValue('all');
 
     const search = page.getByRole('searchbox', { name: 'Search YouTube videos' });
     for (const phrase of ['React tutorials', 'Python tutorials', 'arbitrary keywords']) {
@@ -145,6 +147,29 @@ test('@desktop @mobile @tablet YouTube study explorer filters, watch later, play
     await page.getByRole('button', { name: 'Saved for later' }).click();
     await expect(page.getByText('Your Watch Later list is empty')).toBeVisible();
     await page.getByRole('button', { name: 'Search results' }).click();
+
+    for (const [value, query] of [
+        ['te', 'Telugu language test'],
+        ['hi', 'Hindi language test'],
+        ['en', 'English language test'],
+        ['all', 'All languages test']
+    ]) {
+        await page.getByLabel('Video language').selectOption(value);
+        const requestCountBeforeLanguageSearch = requests.length;
+        await search.fill(query);
+        expect(requests).toHaveLength(requestCountBeforeLanguageSearch);
+        await page.getByRole('button', { name: 'Search videos' }).click();
+        await expect(page.getByRole('button', { name: `Play ${query} video by Example study channel` })).toBeVisible();
+        expect(requests.at(-1)).toMatchObject({
+            query,
+            language: value === 'all' ? null : value
+        });
+        if (value === 'te') {
+            await page.getByRole('button', { name: 'Load more' }).click();
+            await expect(page.getByRole('button', { name: `Play ${query} video part two by Example study channel` })).toBeVisible();
+            expect(requests.at(-1)).toMatchObject({ query, pageToken: 'next-page', language: 'te' });
+        }
+    }
 
     const requestCountBeforeRelatedSearch = requests.length;
     await page.getByRole('button', { name: 'Telangana GK', exact: true }).click();

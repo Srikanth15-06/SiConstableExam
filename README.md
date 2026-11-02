@@ -23,7 +23,7 @@ This repository has two separately installed parts:
 - Track topic progress and use the Smart Study Planner for revision and manual tasks.
 - Generate an AI-ranked full-syllabus schedule personalized to exam role, remaining days, daily study time, topic completion, accuracy, practice activity, and exam weightage. The schedule assigns every syllabus topic, adjusts session lengths when time is tight, and refreshes as progress changes.
 - Connect Google Drive to browse folders with file/page thumbnails, preview or download notes, provision folders, upload supported files (up to 20 MB), and rename files or folders as a site administrator.
-- Search embeddable YouTube videos in the Education category, filter by length and channel, sort by relevance/date/views, play videos in the portal, and keep a browser-local Watch Later list at `/youtube`.
+- Search embeddable YouTube videos in the Education category, prefer Telugu, Hindi, English, or any language, filter by length and channel, sort by relevance/date/views, play videos in the portal, and keep a browser-local Watch Later list at `/youtube`.
 - Secure candidate accounts with Supabase-backed sessions, progress, test history, planner data, and saved questions.
 
 ## Architecture and requests
