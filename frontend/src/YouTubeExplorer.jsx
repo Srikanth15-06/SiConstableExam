@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowLeft, Bookmark, Check, ChevronLeft, ChevronRight, Clock3, LoaderCircle, Minimize2, PictureInPicture2, Play, Search, X } from 'lucide-react';
 import { searchYouTubeVideos } from './services/aiService.js';
 import './YouTubeExplorer.css';
@@ -67,6 +67,8 @@ export default function YouTubeExplorer({ onNavigate }) {
   const [storageError, setStorageError] = useState(watchLater.error);
   const searchRequestRef = useRef(null);
   const moreRequestRef = useRef(null);
+  const initialTopicSearchRef = useRef(new URLSearchParams(window.location.search).get('youtube')?.slice(0, 100).trim() || '');
+  const hasStartedInitialTopicSearchRef = useRef(false);
 
   function updateQuery(value) {
     setQuery(value);
@@ -98,7 +100,7 @@ export default function YouTubeExplorer({ onNavigate }) {
     };
   }, [isPlayerFloating, selectedVideo]);
 
-  async function runSearch(searchQuery = query) {
+  const runSearch = useCallback(async (searchQuery = query) => {
     const requestedQuery = searchQuery.normalize('NFKC').trim();
     searchRequestRef.current?.abort();
     moreRequestRef.current?.abort();
@@ -142,12 +144,22 @@ export default function YouTubeExplorer({ onNavigate }) {
       if (!controller.signal.aborted) setIsLoading(false);
       if (searchRequestRef.current === controller) searchRequestRef.current = null;
     }
-  }
+  }, [duration, language, order, query]);
 
   function submitSearch(event) {
     event.preventDefault();
     void runSearch();
   }
+
+  useEffect(() => {
+    if (!initialTopicSearchRef.current || hasStartedInitialTopicSearchRef.current) return undefined;
+
+    const timeoutId = window.setTimeout(() => {
+      hasStartedInitialTopicSearchRef.current = true;
+      void runSearch(initialTopicSearchRef.current);
+    }, 0);
+    return () => window.clearTimeout(timeoutId);
+  }, [runSearch]);
 
   function toggleWatchLater(video) {
     const isSaved = watchLater.videos.some((savedVideo) => savedVideo.videoId === video.videoId);

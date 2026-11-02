@@ -86,10 +86,10 @@ test('@desktop @mobile @tablet YouTube study explorer filters, watch later, play
     await expect(page).toHaveURL(/\/\?youtube=Percentages$/);
     await expect(page.getByRole('heading', { name: 'Explore YouTube' })).toBeVisible();
     await expect(search).toHaveValue('Percentages');
-    await expect(page.getByText('What would you like to watch?')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Play Percentages video by Example study channel' })).toBeVisible();
     await expect(page.getByText('Education category', { exact: false })).toBeVisible();
     await expect(page.getByLabel('Video language')).toHaveValue('all');
-    expect(requests).toHaveLength(0);
+    expect(requests.filter((request) => request.query === 'Percentages' && !request.pageToken)).toHaveLength(1);
 
     for (const phrase of ['React tutorials', 'Python tutorials', 'arbitrary keywords']) {
         const requestCountBeforeTyping = requests.length;
