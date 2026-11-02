@@ -23,6 +23,7 @@ This repository has two separately installed parts:
 - Track topic progress and use the Smart Study Planner for revision and manual tasks.
 - Generate an AI-ranked full-syllabus schedule personalized to exam role, remaining days, daily study time, topic completion, accuracy, practice activity, and exam weightage. The schedule assigns every syllabus topic, adjusts session lengths when time is tight, and refreshes as progress changes.
 - Connect Google Drive to browse folders with file/page thumbnails, preview or download notes, provision folders, upload supported files (up to 20 MB), and rename files or folders as a site administrator.
+- Open topic-specific YouTube study searches from syllabus topics and active tests. Topic links load matching video results automatically; other searches run only after the user selects Search. Search embeddable videos in the Education category, prefer Telugu, Hindi, English, or any language, filter by length and channel, sort by relevance/date/views, play videos in a dockable floating player with previous/next navigation, and keep a browser-local Watch Later list. Topic links use `/?youtube=<topic>` so they work on static hosts without a `/youtube` rewrite.
 - Secure candidate accounts with Supabase-backed sessions, progress, test history, planner data, and saved questions.
 
 ## Architecture and requests
@@ -37,6 +38,7 @@ The Express server provides these API groups:
 - `/api/drive/admin/session` for administrator sign-in/out; mutating Drive operations require its HTTP-only session.
 - `/api/auth/*` for candidate signup/login/session/logout, `/api/me/*` for the authenticated account snapshot and planner/profile, and `/api/tests/*` for server-created and server-scored attempts.
 - `/api/health` for a safe Supabase configuration/reachability readiness check.
+- `/api/youtube/search?q=polity&duration=short&order=date&pageToken=...` for cached, rate-limited Education-category video search with duration and sort filters.
 
 Locally, the Express server can serve the built frontend from `frontend/dist`. In production, Render serves `frontend/` as a static site and rewrites `/api/*` to the separate Express service. The API remains same-origin from the browser; if using a different host, configure `VITE_API_BASE_URL` explicitly and set the backend's allowed frontend origin.
 
@@ -58,11 +60,14 @@ Backend web service:
 
 The static service needs a Render **Rewrite** rule from `/api/*` to `https://siconstableexam.onrender.com/api/*`. This keeps API and OAuth callback requests on the frontend origin. Leave `VITE_API_BASE_URL` unset; `VITE_API_PROXY_TARGET=http://localhost:8787` is for local Vite development only. Render supplies `PORT`; do not hard-code a production port.
 
+Optionally add a static-site **Rewrite** rule from `/youtube` to `/index.html` if you want direct visits to `/youtube` (and refreshes on that legacy route) to load the React app. Topic links use the homepage query route and do not require this rule.
+
 Set these variables on the Render backend web service only. Keep all key and secret values out of the static frontend service, `VITE_*` variables, and committed files:
 
 - `NODE_ENV=production`
 - `SESSION_SECRET` (a long random value)
 - `FRONTEND_URL=https://siconstableexam-1.onrender.com`
+- `YOUTUBE_API_KEY` (YouTube Data API v3 key; backend only, never a `VITE_*` variable)
 - `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` for backend persistence. `SUPABASE_ANON_KEY` may be configured for tooling, but this app does not connect to Supabase from the browser.
 - `SESSION_SECRET` (a long random value; sessions are persisted as hashes in Supabase).
 - Provider key/model pairs for AI features, such as `GEMINI_API_KEY_1` / `GEMINI_MODEL_1`, `GROQ_API_KEY_1` / `GROQ_MODEL_1`, and `OPENROUTER_API_KEY_1` / `OPENROUTER_MODEL_1`. Numbered pairs through `_20` are supported.
@@ -93,6 +98,8 @@ npm install --prefix frontend
 ```
 
 Configure the ignored repository-root `.env` file for backend settings. Do not commit it. Apply the SQL migration in `supabase/migrations/` to a fresh Supabase project, then configure its URL and service-role key only on the backend. Add provider keys/models as needed; AI providers and Google Drive Notes are optional for account persistence.
+
+For YouTube search, set `YOUTUBE_API_KEY` in this same backend `.env` file after enabling YouTube Data API v3 in Google Cloud. Never prefix it with `VITE_` or put it in `frontend/.env`.
 
 Open two terminals in the repository root:
 
@@ -157,6 +164,7 @@ The connected account needs permission to read the existing root folder; creatin
 | Variable | Purpose |
 | --- | --- |
 | `PORT` or `AI_SERVER_PORT` | Express listen port; defaults to `8787` (`PORT` takes precedence) |
+| `YOUTUBE_API_KEY` | Backend-only YouTube Data API v3 key for `/api/youtube/search` |
 | `SESSION_SECRET` | Required in production; signs OAuth state and Drive administrator sessions. Candidate sessions are persisted by token hash in Supabase. |
 | `FRONTEND_URL` | Frontend URL used after Google OAuth; defaults to `http://localhost:5173` |
 | `VITE_API_PROXY_TARGET` | Development proxy target for `/api`; defaults to `http://localhost:8787` |
@@ -202,12 +210,14 @@ Then open `http://localhost:8787`. Set `NODE_ENV=production` only with an explic
 frontend/
   src/
     App.jsx                 Main study application and local learner state
+    YouTubeExplorer.jsx     Education video search, channel filters, and Watch Later
     services/aiService.js   Browser API client for AI and Google Drive
     planner-utils.js        Study-plan calculations
     test-results.js         Test scoring and answer normalization
   public/                   Static frontend assets
 server/
   index.mjs                 Express API, OAuth callback, and static hosting
+  youtube-search.mjs       Backend-only YouTube Education search, video details, and cache
   ai-service.mjs            AI request construction and response validation
   provider-manager.mjs      AI provider configuration and error handling
   google-drive-service.mjs  Drive API, OAuth token handling, and file storage

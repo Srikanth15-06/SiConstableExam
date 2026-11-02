@@ -26,6 +26,7 @@ import {
 } from './planner-utils.js';
 import { buildAiSchedulePrompt, buildAiStudySchedule, parseAiScheduleResponse } from './ai-study-schedule.js';
 import { createProgressCsv, getMistakeNotebook, getMockTestInsights, getSpacedRevisionRecommendations } from './profile-tools.js';
+import YouTubeExplorer from './YouTubeExplorer.jsx';
 
 const getTopicWeightage = (exam, subject, topic) => {
   const weightage = resolveTopicWeightage(exam, subject, topic, {});
@@ -122,6 +123,11 @@ const getExamCountdown = (targetTime, now) => {
 };
 
 const getLocalDateKey = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+const normalizeAppPath = (pathname) => pathname.replace(/\/+$/, '') || '/';
+const isYoutubeAppLocation = (pathname, search) => (
+  normalizeAppPath(pathname) === '/youtube'
+  || new URLSearchParams(search).has('youtube')
+);
 
 function initializeExamAudio(contextRef) {
   if (typeof window === 'undefined') return;
@@ -225,6 +231,35 @@ function getSafeAiMessage(error, fallback) {
 }
 
 export default function App() {
+  const [isYoutubeRoute, setIsYoutubeRoute] = useState(() => (
+    isYoutubeAppLocation(window.location.pathname, window.location.search)
+  ));
+  const navigateInternal = (path) => {
+    const destination = new URL(path, window.location.origin);
+    const normalizedPath = normalizeAppPath(destination.pathname);
+    if (normalizedPath === '/youtube') {
+      const youtubeQuery = destination.searchParams.get('q') || '';
+      destination.pathname = '/';
+      destination.search = '';
+      destination.searchParams.set('youtube', youtubeQuery);
+    }
+    const nextUrl = `${destination.pathname}${destination.search}${destination.hash}`;
+    if (
+      `${window.location.pathname}${window.location.search}${window.location.hash}` !== nextUrl
+    ) {
+      window.history.pushState({}, '', nextUrl);
+    }
+    setIsYoutubeRoute(isYoutubeAppLocation(destination.pathname, destination.search));
+  };
+
+  useEffect(() => {
+    const syncRoute = () => setIsYoutubeRoute(
+      isYoutubeAppLocation(window.location.pathname, window.location.search)
+    );
+    window.addEventListener('popstate', syncRoute);
+    return () => window.removeEventListener('popstate', syncRoute);
+  }, []);
+
   const [currentMember, setCurrentMember] = useState(null);
   const [legacyMembers, setLegacyMembers] = useState([]);
   const [selectedLegacyMemberId, setSelectedLegacyMemberId] = useState('');
@@ -2153,6 +2188,8 @@ export default function App() {
     </section>
   ) : null;
 
+  if (isYoutubeRoute) return <YouTubeExplorer onNavigate={navigateInternal} />;
+
   if (!isMemberHydrated) {
     return <main role="status" className="flex min-h-screen items-center justify-center bg-slate-950 text-sm text-slate-300">Checking your account...</main>;
   }
@@ -2360,6 +2397,13 @@ export default function App() {
             >
               <BookOpen className="w-4 h-4 text-teal-400" />
               <span>Notes Library</span>
+            </button>
+            <button
+              onClick={() => navigateInternal('/youtube')}
+              className="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-sm font-semibold text-slate-400 transition hover:bg-slate-700/50 hover:text-slate-200"
+            >
+              <Play className="w-4 h-4 text-red-400" />
+              <span>YouTube Search</span>
             </button>
             <button
               onClick={() => setCurrentView('ai-tutor')}
@@ -3127,6 +3171,16 @@ export default function App() {
                         <p className="mt-2 text-sm leading-relaxed text-slate-400">Master this topic from fundamentals to exam level with AI-powered explanations.</p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
+                        <a
+                          href={`/?youtube=${encodeURIComponent(selectedTopic)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label={`Search YouTube for ${selectedTopic}`}
+                          className="inline-flex items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-200 hover:bg-red-500/20"
+                        >
+                          <Play className="h-4 w-4" />
+                          Study on YouTube
+                        </a>
                         <button
                           type="button"
                           onClick={() => void handleViewSelectedDriveNotes()}
@@ -3599,15 +3653,27 @@ export default function App() {
                     </span>
                   </h3>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => window.print()}
-                  title="Print or save this question paper as a PDF"
-                  className="print:hidden inline-flex items-center gap-2 rounded-lg border border-blue-400/30 bg-blue-500/10 px-3 py-2 text-xs font-bold text-blue-100 transition hover:bg-blue-500/20"
-                >
-                  <Download className="h-4 w-4" />
-                  Download PDF
-                </button>
+                <div className="print:hidden flex flex-wrap items-center justify-center gap-2">
+                  <a
+                    href={`/?youtube=${encodeURIComponent(activeTestQuestions[currentQuestionIdx]?.topic || selectedTopic)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={`Search YouTube for ${activeTestQuestions[currentQuestionIdx]?.topic || selectedTopic}`}
+                    className="inline-flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-100 transition hover:bg-red-500/20"
+                  >
+                    <Play className="h-4 w-4" />
+                    Study on YouTube
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    title="Print or save this question paper as a PDF"
+                    className="inline-flex items-center gap-2 rounded-lg border border-blue-400/30 bg-blue-500/10 px-3 py-2 text-xs font-bold text-blue-100 transition hover:bg-blue-500/20"
+                  >
+                    <Download className="h-4 w-4" />
+                    Download PDF
+                  </button>
+                </div>
               </div>
               {questionGenerationNotice && (
                 <p className="text-xs text-teal-300 bg-teal-500/10 border border-teal-500/20 rounded-lg px-3 py-2">
@@ -4648,7 +4714,49 @@ export default function App() {
                           <div className="h-2 overflow-hidden rounded-full bg-slate-700" role="img" aria-label={`${item.accuracy}% accuracy`}>
                             <div className={`h-full rounded-full ${item.accuracy >= 70 ? 'bg-emerald-500' : item.accuracy >= 50 ? 'bg-amber-500' : 'bg-rose-500'}`} style={{ width: `${Math.min(100, Math.max(0, item.accuracy))}%` }} />
                           </div>
-                          <span className="font-bold text-slate-200">{item.accuracy}% · {item.averageSecondsPerQuestion}s/q</span>
+
+                          <div className="mt-3 h-2.5 overflow-hidden rounded-full border border-slate-700 bg-slate-800" role="img" aria-label={`${item.accuracy}% accuracy`}>
+                            <div className="flex h-full w-full">
+                              <span className="h-full bg-emerald-400 transition-[width]" style={{ width: `${item.total ? item.correct / item.total * 100 : 0}%` }} />
+                              <span className="h-full bg-rose-400 transition-[width]" style={{ width: `${item.total ? item.incorrect / item.total * 100 : 0}%` }} />
+                              <span className="h-full bg-slate-500 transition-[width]" style={{ width: `${item.total ? item.unanswered / item.total * 100 : 0}%` }} />
+                            </div>
+                          </div>
+
+                          <div className="mt-3 grid grid-cols-3 gap-2 text-center">
+                            <div className="rounded-lg border border-emerald-400/20 bg-emerald-400/5 px-2 py-1.5">
+                              <p className="text-sm font-black tabular-nums text-emerald-200">{item.correct}</p>
+                              <p className="mt-0.5 text-[9px] font-bold uppercase tracking-wider text-emerald-100/60">Correct</p>
+                            </div>
+                            <div className="rounded-lg border border-rose-400/20 bg-rose-400/5 px-2 py-1.5">
+                              <p className="text-sm font-black tabular-nums text-rose-200">{item.incorrect}</p>
+                              <p className="mt-0.5 text-[9px] font-bold uppercase tracking-wider text-rose-100/60">Wrong</p>
+                            </div>
+                            <div className="rounded-lg border border-slate-500/30 bg-slate-800/70 px-2 py-1.5">
+                              <p className="text-sm font-black tabular-nums text-slate-200">{item.unanswered}</p>
+                              <p className="mt-0.5 text-[9px] font-bold uppercase tracking-wider text-slate-400">Skipped</p>
+                            </div>
+                          </div>
+
+                          <div className="mt-3 hidden border-t border-slate-700/80 pt-3 group-hover:block group-focus:block">
+                            <div className="grid grid-cols-1 gap-2 text-[11px] text-slate-300 sm:grid-cols-2">
+                              <p><span className="font-semibold text-slate-500">Date &amp; time:</span> {item.dateTime}</p>
+                              <p><span className="font-semibold text-slate-500">Questions:</span> {item.total}</p>
+                              <p><span className="font-semibold text-slate-500">Average time:</span> {item.averageSecondsPerQuestion}s per question</p>
+                              {item.subject && <p><span className="font-semibold text-slate-500">Subject:</span> {item.subject}</p>}
+                            </div>
+                            {item.topicMetrics.length > 0 && (
+                              <div className="mt-3 space-y-1.5">
+                                <p className="text-[9px] font-bold uppercase tracking-[0.16em] text-slate-500">Topic breakdown</p>
+                                {item.topicMetrics.map((topic) => (
+                                  <div key={`${topic.subject}:${topic.topic}`} className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 rounded-lg border border-slate-700/70 bg-slate-950/50 px-2.5 py-2 text-[10px]">
+                                    <span className="font-semibold text-slate-200">{topic.topic}</span>
+                                    <span className="text-slate-400">{topic.correct} right · {topic.incorrect} wrong · {topic.unanswered} skipped · <strong className="text-blue-200">{topic.accuracy}%</strong></span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       ))}
                     </div>

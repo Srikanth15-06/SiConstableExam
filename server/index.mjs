@@ -17,6 +17,7 @@ import { getHealthStatus } from './health-status.mjs';
 import { createCandidateDriveUploadRouter } from './drive-upload-routes.mjs';
 import { createTopicLearningVideoRouter } from './topic-learning-video-routes.mjs';
 import { createSupabaseLearningVideoStore } from './supabase-learning-video-store.mjs';
+import { createYouTubeSearchHandler } from './youtube-search.mjs';
 
 dotenv.config();
 
@@ -138,6 +139,12 @@ const candidateDriveUploadRateLimiter = createIpRateLimiter({
     windowMs: 60 * 60_000,
     code: 'DRIVE_UPLOAD_RATE_LIMITED',
     message: 'Too many shared notes were uploaded. Try again later.'
+});
+const youtubeSearchRateLimiter = createIpRateLimiter({
+    limit: 5,
+    windowMs: 60_000,
+    code: 'YOUTUBE_RATE_LIMITED',
+    message: 'Too many YouTube searches. Wait briefly before trying again.'
 });
 
 app.use((_req, res, next) => {
@@ -271,6 +278,8 @@ app.use('/api', createTopicLearningVideoRouter({
     allowedOrigins,
     rateLimiter: userDataRateLimiter
 }));
+
+app.get('/api/youtube/search', youtubeSearchRateLimiter, createYouTubeSearchHandler());
 
 app.post('/api/drive/admin/session', adminLoginRateLimiter, (req, res) => {
     const configuredKey = getDriveAdminKey();

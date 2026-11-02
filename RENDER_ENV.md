@@ -16,6 +16,8 @@ Publish Directory: dist
 
 Add a **Rewrite** rule from `/api/*` to `https://siconstableexam.onrender.com/api/*`. Leave `VITE_API_BASE_URL` unset for this same-origin rewrite. Keep backend secrets out of the static service; `VITE_API_PROXY_TARGET` is only for local development.
 
+Add a static-site **Rewrite** rule from `/youtube` to `/index.html` so direct visits and refreshes on the client-side route load the React app.
+
 ## Backend Web Service
 
 ```text
@@ -31,6 +33,7 @@ Render provides `PORT`. Configure these variables on the backend only:
 | `NODE_ENV` | Set to `production` |
 | `FRONTEND_URL` | `https://siconstableexam-1.onrender.com` |
 | `SESSION_SECRET` | Long random server session/OAuth signing secret |
+| `YOUTUBE_API_KEY` | YouTube Data API v3 key used only by the backend search endpoint |
 | `SUPABASE_URL` | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | Backend-only privileged key; never expose to Vite/browser |
 | `SUPABASE_ANON_KEY` | Optional project key; the browser does not use Supabase directly |
@@ -52,6 +55,8 @@ Google Drive Notes is optional. If enabled, keep these backend-only variables:
 | `GOOGLE_DRIVE_SHARED_DRIVE_ID` | Optional; not needed for the existing My Drive folder |
 
 Do not configure `DATABASE_URL`, PostgreSQL services, Render disks, `GOOGLE_DRIVE_TOKEN_FILE`, or `GOOGLE_DRIVE_TOKEN_VAULT_SERVICE_ACCOUNT_JSON`. Do not put `SUPABASE_SERVICE_ROLE_KEY`, OAuth secrets, AI keys, or session secrets in any `VITE_*` variable.
+
+Create a YouTube Data API v3 key in Google Cloud, enable the YouTube Data API v3 for its project, and set it as `YOUTUBE_API_KEY` on the backend only. The search endpoint returns a clear unavailable response until the key is configured; never add this key to frontend environment variables or source control.
 
 ## Supabase and Readiness
 

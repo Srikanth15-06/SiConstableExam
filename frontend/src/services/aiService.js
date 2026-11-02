@@ -32,6 +32,31 @@ async function requestCandidateApi(path, { method = 'GET', body, headers = {} } 
   return data;
 }
 
+export async function searchYouTubeVideos(query, pageToken = '', { signal, duration = 'any', order = 'relevance', language = 'all' } = {}) {
+  const params = new URLSearchParams({ q: query });
+  if (pageToken) params.set('pageToken', pageToken);
+  if (duration !== 'any') params.set('duration', duration);
+  if (order !== 'relevance') params.set('order', order);
+  if (language !== 'all') params.set('language', language);
+
+  let response;
+  try {
+    response = await fetch(apiUrl(`/api/youtube/search?${params}`), { credentials: 'include', signal });
+  } catch (error) {
+    if (error.name === 'AbortError') throw error;
+    throw new AIServiceError('Unable to connect to YouTube search. Please try again.', { code: 'NETWORK_ERROR' });
+  }
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || data.success !== true || !Array.isArray(data.videos)) {
+    throw new AIServiceError(data.message || 'YouTube search could not be completed. Please try again.', {
+      code: data.code || 'YOUTUBE_SEARCH_FAILED',
+      status: response.status
+    });
+  }
+  return data;
+}
+
 export async function signUpCandidate({ name, email, password }) {
   return requestCandidateApi('/api/auth/signup', { method: 'POST', body: { name, email, password } });
 }
