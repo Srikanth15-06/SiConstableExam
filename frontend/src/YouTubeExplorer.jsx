@@ -15,57 +15,26 @@ function formatPublishedDate(value) {
 export default function YouTubeExplorer({ onNavigate }) {
   const [query, setQuery] = useState('');
   const [videos, setVideos] = useState([]);
+  const [submittedQuery, setSubmittedQuery] = useState('');
   const [nextPageToken, setNextPageToken] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [error, setError] = useState('');
   const [selectedVideo, setSelectedVideo] = useState(null);
-  const [searchTrigger, setSearchTrigger] = useState(0);
+  const searchRequestRef = useRef(null);
   const moreRequestRef = useRef(null);
-  const runSearchImmediatelyRef = useRef(false);
 
   function updateQuery(value) {
-    const hasQuery = Boolean(value.normalize('NFKC').trim());
-    moreRequestRef.current?.abort();
     setQuery(value);
-    setVideos([]);
-    setNextPageToken('');
-    setError('');
-    setHasSearched(hasQuery);
-    setIsLoading(hasQuery);
-    setIsLoadingMore(false);
   }
 
   useEffect(() => {
-    const normalizedQuery = query.normalize('NFKC').trim();
-    moreRequestRef.current?.abort();
-    const searchImmediately = runSearchImmediatelyRef.current;
-    runSearchImmediatelyRef.current = false;
-
-    if (!normalizedQuery) return undefined;
-
-    const controller = new AbortController();
-    const timeout = window.setTimeout(async () => {
-      try {
-        const result = await searchYouTubeVideos(normalizedQuery, '', { signal: controller.signal });
-        if (!controller.signal.aborted) {
-          setVideos(result.videos);
-          setNextPageToken(result.nextPageToken || '');
-        }
-      } catch (requestError) {
-        if (!controller.signal.aborted) setError(requestError.message || 'YouTube search could not be completed.');
-      } finally {
-        if (!controller.signal.aborted) setIsLoading(false);
-      }
-    }, searchImmediately ? 0 : 350);
-
     return () => {
-      window.clearTimeout(timeout);
-      controller.abort();
+      searchRequestRef.current?.abort();
       moreRequestRef.current?.abort();
     };
-  }, [query, searchTrigger]);
+  }, []);
 
   useEffect(() => {
     if (!selectedVideo) return undefined;
@@ -81,9 +50,45 @@ export default function YouTubeExplorer({ onNavigate }) {
     };
   }, [selectedVideo]);
 
+  async function submitSearch(event) {
+    event.preventDefault();
+    const requestedQuery = query.normalize('NFKC').trim();
+    searchRequestRef.current?.abort();
+    moreRequestRef.current?.abort();
+    setIsLoadingMore(false);
+    setError('');
+    setVideos([]);
+    setNextPageToken('');
+
+    if (!requestedQuery) {
+      setSubmittedQuery('');
+      setHasSearched(false);
+      setIsLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    searchRequestRef.current = controller;
+    setSubmittedQuery(requestedQuery);
+    setHasSearched(true);
+    setIsLoading(true);
+    try {
+      const result = await searchYouTubeVideos(requestedQuery, '', { signal: controller.signal });
+      if (!controller.signal.aborted) {
+        setVideos(result.videos);
+        setNextPageToken(result.nextPageToken || '');
+      }
+    } catch (requestError) {
+      if (!controller.signal.aborted) setError(requestError.message || 'YouTube search could not be completed.');
+    } finally {
+      if (!controller.signal.aborted) setIsLoading(false);
+      if (searchRequestRef.current === controller) searchRequestRef.current = null;
+    }
+  }
+
   async function loadMore() {
     if (!nextPageToken || isLoadingMore) return;
-    const requestedQuery = query.normalize('NFKC').trim();
+    const requestedQuery = submittedQuery;
     const controller = new AbortController();
     moreRequestRef.current = controller;
     setIsLoadingMore(true);
@@ -125,11 +130,7 @@ export default function YouTubeExplorer({ onNavigate }) {
           <form
             className="yt-search-form"
             role="search"
-            onSubmit={(event) => {
-              event.preventDefault();
-              runSearchImmediatelyRef.current = true;
-              setSearchTrigger((current) => current + 1);
-            }}
+            onSubmit={(event) => { void submitSearch(event); }}
           >
             <label className="yt-visually-hidden" htmlFor="yt-search">Search YouTube videos</label>
             <Search size={20} aria-hidden="true" />

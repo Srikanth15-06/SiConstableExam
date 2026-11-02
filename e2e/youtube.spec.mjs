@@ -59,12 +59,17 @@ test('@desktop @mobile @tablet YouTube search, pagination, playback, quota error
 
     const search = page.getByRole('searchbox', { name: 'Search YouTube videos' });
     for (const phrase of ['React tutorials', 'Python tutorials', 'arbitrary keywords']) {
+        const requestCountBeforeTyping = requests.length;
         await search.fill(phrase);
+        expect(requests).toHaveLength(requestCountBeforeTyping);
+        await page.getByRole('button', { name: 'Search videos' }).click();
         await expect(page.getByRole('button', { name: `Play ${phrase} video by Example channel` })).toBeVisible();
         expect(requests.some((request) => request.query === phrase && !request.pageToken)).toBe(true);
     }
 
     await search.fill('React tutorials');
+    expect(requests.filter((request) => request.query === 'React tutorials' && !request.pageToken)).toHaveLength(1);
+    await page.getByRole('button', { name: 'Search videos' }).click();
     const firstVideo = page.getByRole('button', { name: 'Play React tutorials video by Example channel' });
     await expect(firstVideo).toBeVisible();
     await expect(firstVideo.locator('img')).toHaveAttribute('src', 'https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg');
@@ -88,6 +93,8 @@ test('@desktop @mobile @tablet YouTube search, pagination, playback, quota error
     await expect(player).toHaveCount(0);
 
     await search.fill('quota test');
+    expect(requests.some((request) => request.query === 'quota test')).toBe(false);
+    await page.getByRole('button', { name: 'Search videos' }).click();
     await expect(page.getByRole('alert')).toContainText('API quota');
     await expect(page).toHaveURL(/\/youtube$/);
     expect(context.pages()).toHaveLength(1);
