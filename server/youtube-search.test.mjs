@@ -34,7 +34,9 @@ test('YouTube search validates query and page token before calling Google', asyn
         { q: 'a'.repeat(101) },
         { q: ['react'] },
         { q: 'react', pageToken: 'invalid token' },
-        { q: 'react', pageToken: 'x'.repeat(513) }
+        { q: 'react', pageToken: 'x'.repeat(513) },
+        { q: 'react', duration: 'extreme' },
+        { q: 'react', order: 'random' }
     ]) {
         const response = createResponseRecorder();
         await handler(createRequest(query), response);
@@ -45,12 +47,22 @@ test('YouTube search validates query and page token before calling Google', asyn
 });
 
 test('YouTube search requests embeddable videos and maps public snippet fields', async () => {
-    let requestedUrl;
+    const requestedUrls = [];
     const handler = createYouTubeSearchHandler({
         apiKey: 'server-only-key',
         cache: new Map(),
         fetchImpl: async (url) => {
-            requestedUrl = new URL(url);
+            const requestedUrl = new URL(url);
+            requestedUrls.push(requestedUrl);
+            if (requestedUrl.pathname.endsWith('/videos')) {
+                return {
+                    ok: true,
+                    status: 200,
+                    json: async () => ({
+                        items: [{ id: 'abcdefghijk', contentDetails: { duration: 'P1DT1H2M3S' } }]
+                    })
+                };
+            }
             return {
                 ok: true,
                 status: 200,
@@ -60,6 +72,7 @@ test('YouTube search requests embeddable videos and maps public snippet fields',
                         id: { videoId: 'abcdefghijk' },
                         snippet: {
                             title: 'React tutorial',
+                            channelId: 'UC-example',
                             channelTitle: 'Example channel',
                             description: 'Learn React.',
                             publishedAt: '2026-01-02T03:04:05Z',
@@ -75,33 +88,41 @@ test('YouTube search requests embeddable videos and maps public snippet fields',
 
     await handler(createRequest({ q: '  React tutorial  ' }), response);
 
-    assert.equal(requestedUrl.origin, 'https://www.googleapis.com');
-    assert.equal(requestedUrl.searchParams.get('key'), 'server-only-key');
-    assert.equal(requestedUrl.searchParams.get('q'), 'React tutorial');
-    assert.equal(requestedUrl.searchParams.get('type'), 'video');
-    assert.equal(requestedUrl.searchParams.get('videoEmbeddable'), 'true');
-    assert.equal(requestedUrl.searchParams.get('maxResults'), '12');
+    const searchUrl = requestedUrls[0];
+    assert.equal(searchUrl.origin, 'https://www.googleapis.com');
+    assert.equal(searchUrl.searchParams.get('key'), 'server-only-key');
+    assert.equal(searchUrl.searchParams.get('q'), 'React tutorial');
+    assert.equal(searchUrl.searchParams.get('type'), 'video');
+    assert.equal(searchUrl.searchParams.get('videoEmbeddable'), 'true');
+    assert.equal(searchUrl.searchParams.get('videoCategoryId'), '27');
+    assert.equal(searchUrl.searchParams.get('videoDuration'), 'any');
+    assert.equal(searchUrl.searchParams.get('order'), 'relevance');
+    assert.equal(searchUrl.searchParams.get('maxResults'), '12');
+    assert.equal(requestedUrls[1].pathname, '/youtube/v3/videos');
+    assert.equal(requestedUrls[1].searchParams.get('part'), 'contentDetails');
     assert.deepEqual(response.body, {
         success: true,
         nextPageToken: 'next-page',
         videos: [{
             videoId: 'abcdefghijk',
+        channelId: 'UC-example',
             title: 'React tutorial',
             thumbnailUrl: 'https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg',
             channelName: 'Example channel',
             description: 'Learn React.',
-            publishedAt: '2026-01-02T03:04:05Z'
+            publishedAt: '2026-01-02T03:04:05Z',
+            durationSeconds: 90_123
         }]
     });
 });
 
 test('YouTube search caches successful pages by query and token', async () => {
-    let requests = 0;
+    let searchRequests = 0;
     const handler = createYouTubeSearchHandler({
         apiKey: 'test-key',
         cache: new Map(),
-        fetchImpl: async () => {
-            requests += 1;
+        fetchImpl: async (url) => {
+            if (new URL(url).pathname.endsWith('/search')) searchRequests += 1;
             return { ok: true, status: 200, json: async () => ({ items: [] }) };
         },
         logger: { error() {} }
@@ -112,8 +133,29 @@ test('YouTube search caches successful pages by query and token', async () => {
     await handler(createRequest({ q: 'Python tutorials' }), first);
     await handler(createRequest({ q: 'python tutorials' }), second);
 
-    assert.equal(requests, 1);
+    assert.equal(searchRequests, 1);
     assert.deepEqual(second.body, first.body);
+});
+
+test('YouTube search validates category filters and forwards duration and order', async () => {
+    let requestedUrl;
+    const handler = createYouTubeSearchHandler({
+        apiKey: 'test-key',
+        cache: new Map(),
+        fetchImpl: async (url) => {
+            requestedUrl = new URL(url);
+            return { ok: true, status: 200, json: async () => ({ items: [] }) };
+        },
+        logger: { error() {} }
+    });
+
+    const response = createResponseRecorder();
+    await handler(createRequest({ q: 'Telangana GK', duration: 'long', order: 'date' }), response);
+
+    assert.equal(response.statusCode, 200);
+    assert.equal(requestedUrl.searchParams.get('videoCategoryId'), '27');
+    assert.equal(requestedUrl.searchParams.get('videoDuration'), 'long');
+    assert.equal(requestedUrl.searchParams.get('order'), 'date');
 });
 
 test('YouTube search reports missing configuration without making an upstream request', async () => {
@@ -147,6 +189,42 @@ test('YouTube search reports quota exhaustion explicitly', async () => {
 
     await handler(createRequest({ q: 'Python' }), response);
 
+    assert.equal(response.statusCode, 429);
+    assert.equal(response.body.code, 'YOUTUBE_QUOTA_EXCEEDED');
+});
+
+test('YouTube search reports quota exhaustion while loading video details', async () => {
+    let requestCount = 0;
+    const handler = createYouTubeSearchHandler({
+        apiKey: 'test-key',
+        cache: new Map(),
+        fetchImpl: async (url) => {
+            requestCount += 1;
+            if (new URL(url).pathname.endsWith('/videos')) {
+                return {
+                    ok: false,
+                    status: 403,
+                    json: async () => ({ error: { errors: [{ reason: 'quotaExceeded' }] } })
+                };
+            }
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    items: [{
+                        id: { videoId: 'abcdefghijk' },
+                        snippet: { title: 'Lesson', channelTitle: 'Study channel' }
+                    }]
+                })
+            };
+        },
+        logger: { error() {} }
+    });
+    const response = createResponseRecorder();
+
+    await handler(createRequest({ q: 'Lesson' }), response);
+
+    assert.equal(requestCount, 2);
     assert.equal(response.statusCode, 429);
     assert.equal(response.body.code, 'YOUTUBE_QUOTA_EXCEEDED');
 });

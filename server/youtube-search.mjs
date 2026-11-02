@@ -39,12 +39,23 @@ function mapVideo(item) {
 
     return {
         videoId,
+        channelId: String(snippet.channelId || '').slice(0, 100),
         title: String(snippet.title || '').slice(0, 500),
         thumbnailUrl: readThumbnail(snippet.thumbnails, videoId),
         channelName: String(snippet.channelTitle || '').slice(0, 200),
         description: String(snippet.description || '').slice(0, 5000),
-        publishedAt: String(snippet.publishedAt || snippet.publishTime || '')
+        publishedAt: String(snippet.publishedAt || snippet.publishTime || ''),
+        durationSeconds: null
     };
+}
+
+function parseIsoDuration(value) {
+    const match = /^P(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(String(value || ''));
+    if (!match || !match[0].length || !match[1] && !match[2] && !match[3] && !match[4]) return null;
+    return Number(match[1] || 0) * 86_400
+        + Number(match[2] || 0) * 3600
+        + Number(match[3] || 0) * 60
+        + Number(match[4] || 0);
 }
 
 function getCachedSearch(cache, key, now) {
@@ -76,12 +87,22 @@ export function createYouTubeSearchHandler({
         const rawQuery = req.query.q;
         const query = typeof rawQuery === 'string' ? rawQuery.normalize('NFKC').trim() : '';
         const pageToken = req.query.pageToken === undefined ? '' : req.query.pageToken;
+        const duration = req.query.duration === undefined ? 'any' : req.query.duration;
+        const order = req.query.order === undefined ? 'relevance' : req.query.order;
         if (!query || Array.from(query).length > 100 || /[\u0000-\u001F\u007F]/.test(query)) {
             sendFailure(res, 400, 'INVALID_YOUTUBE_QUERY', 'Enter a search query of 1 to 100 characters.');
             return;
         }
         if (!isValidPageToken(pageToken)) {
             sendFailure(res, 400, 'INVALID_YOUTUBE_PAGE_TOKEN', 'The YouTube pagination token is invalid.');
+            return;
+        }
+        if (!['any', 'short', 'medium', 'long'].includes(duration)) {
+            sendFailure(res, 400, 'INVALID_YOUTUBE_DURATION', 'Choose a valid video duration filter.');
+            return;
+        }
+        if (!['relevance', 'date', 'viewCount'].includes(order)) {
+            sendFailure(res, 400, 'INVALID_YOUTUBE_ORDER', 'Choose a valid video sort order.');
             return;
         }
 
@@ -91,7 +112,7 @@ export function createYouTubeSearchHandler({
             return;
         }
 
-        const cacheKey = `${query.toLowerCase()}\n${pageToken}`;
+        const cacheKey = `${query.toLowerCase()}\n${pageToken}\n${duration}\n${order}`;
         const cached = getCachedSearch(cache, cacheKey, now());
         if (cached) {
             res.json({ success: true, ...cached });
@@ -104,6 +125,9 @@ export function createYouTubeSearchHandler({
             part: 'snippet',
             type: 'video',
             videoEmbeddable: 'true',
+            videoCategoryId: '27',
+            videoDuration: duration,
+            order,
             maxResults: '12',
             q: query,
             ...(pageToken ? { pageToken } : {})
@@ -144,6 +168,49 @@ export function createYouTubeSearchHandler({
         }
 
         const videos = payload.items.map(mapVideo).filter(Boolean);
+        if (videos.length) {
+            const detailsUrl = new URL('https://www.googleapis.com/youtube/v3/videos');
+            detailsUrl.search = new URLSearchParams({
+                key: configuredApiKey,
+                part: 'contentDetails',
+                id: videos.map((video) => video.videoId).join(',')
+            }).toString();
+
+            let detailsResponse;
+            try {
+                detailsResponse = await fetchImpl(detailsUrl, { signal: AbortSignal.timeout(8_000) });
+            } catch {
+                logger.error(JSON.stringify({ category: 'youtube-search', code: 'UPSTREAM_DETAILS_REQUEST_FAILED' }));
+                sendFailure(res, 502, 'YOUTUBE_SEARCH_UNAVAILABLE', 'Video details are temporarily unavailable. Please try again.');
+                return;
+            }
+
+            let detailsPayload;
+            try {
+                detailsPayload = await detailsResponse.json();
+            } catch {
+                logger.error(JSON.stringify({ category: 'youtube-search', code: 'INVALID_DETAILS_RESPONSE', status: detailsResponse.status }));
+                sendFailure(res, 502, 'YOUTUBE_SEARCH_UNAVAILABLE', 'Video details returned an invalid response. Please try again.');
+                return;
+            }
+            if (!detailsResponse.ok || !Array.isArray(detailsPayload?.items)) {
+                if (isQuotaFailure(detailsPayload)) {
+                    sendFailure(res, 429, 'YOUTUBE_QUOTA_EXCEEDED', 'YouTube search has reached its API quota. Please try again later.');
+                    return;
+                }
+                logger.error(JSON.stringify({ category: 'youtube-search', code: 'UPSTREAM_DETAILS_API_ERROR', status: detailsResponse.status }));
+                sendFailure(res, 502, 'YOUTUBE_SEARCH_UNAVAILABLE', 'Video details are temporarily unavailable. Please try again.');
+                return;
+            }
+
+            const durationsById = new Map(detailsPayload.items.map((item) => [
+                item.id,
+                parseIsoDuration(item.contentDetails?.duration)
+            ]));
+            for (const video of videos) {
+                video.durationSeconds = durationsById.get(video.videoId) ?? null;
+            }
+        }
         const nextPageToken = isValidPageToken(payload.nextPageToken) ? payload.nextPageToken : '';
         const data = { videos, nextPageToken };
         storeCachedSearch(cache, cacheKey, data, now());

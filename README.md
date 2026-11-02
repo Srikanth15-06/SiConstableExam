@@ -23,7 +23,7 @@ This repository has two separately installed parts:
 - Track topic progress and use the Smart Study Planner for revision and manual tasks.
 - Generate an AI-ranked full-syllabus schedule personalized to exam role, remaining days, daily study time, topic completion, accuracy, practice activity, and exam weightage. The schedule assigns every syllabus topic, adjusts session lengths when time is tight, and refreshes as progress changes.
 - Connect Google Drive to browse folders with file/page thumbnails, preview or download notes, provision folders, upload supported files (up to 20 MB), and rename files or folders as a site administrator.
-- Search publicly available, embeddable YouTube videos and play them inside the portal on the `/youtube` page.
+- Search embeddable YouTube videos in the Education category, filter by length and channel, sort by relevance/date/views, play videos in the portal, and keep a browser-local Watch Later list at `/youtube`.
 - Secure candidate accounts with Supabase-backed sessions, progress, test history, planner data, and saved questions.
 
 ## Architecture and requests
@@ -38,7 +38,7 @@ The Express server provides these API groups:
 - `/api/drive/admin/session` for administrator sign-in/out; mutating Drive operations require its HTTP-only session.
 - `/api/auth/*` for candidate signup/login/session/logout, `/api/me/*` for the authenticated account snapshot and planner/profile, and `/api/tests/*` for server-created and server-scored attempts.
 - `/api/health` for a safe Supabase configuration/reachability readiness check.
-- `/api/youtube/search?q=react&pageToken=...` for cached, rate-limited YouTube Data API video search.
+- `/api/youtube/search?q=polity&duration=short&order=date&pageToken=...` for cached, rate-limited Education-category video search with duration and sort filters.
 
 Locally, the Express server can serve the built frontend from `frontend/dist`. In production, Render serves `frontend/` as a static site and rewrites `/api/*` to the separate Express service. The API remains same-origin from the browser; if using a different host, configure `VITE_API_BASE_URL` explicitly and set the backend's allowed frontend origin.
 
@@ -210,14 +210,14 @@ Then open `http://localhost:8787`. Set `NODE_ENV=production` only with an explic
 frontend/
   src/
     App.jsx                 Main study application and local learner state
-    YouTubeExplorer.jsx     Public YouTube search and embedded player page
+    YouTubeExplorer.jsx     Education video search, channel filters, and Watch Later
     services/aiService.js   Browser API client for AI and Google Drive
     planner-utils.js        Study-plan calculations
     test-results.js         Test scoring and answer normalization
   public/                   Static frontend assets
 server/
   index.mjs                 Express API, OAuth callback, and static hosting
-  youtube-search.mjs       Backend-only YouTube Data API search and cache
+  youtube-search.mjs       Backend-only YouTube Education search, video details, and cache
   ai-service.mjs            AI request construction and response validation
   provider-manager.mjs      AI provider configuration and error handling
   google-drive-service.mjs  Drive API, OAuth token handling, and file storage

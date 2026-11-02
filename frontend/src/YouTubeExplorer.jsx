@@ -1,9 +1,29 @@
 import { useEffect, useRef, useState } from 'react';
-import { ArrowLeft, LoaderCircle, Play, Search, X } from 'lucide-react';
+import { ArrowLeft, Bookmark, Check, Clock3, LoaderCircle, Play, Search, X } from 'lucide-react';
 import { searchYouTubeVideos } from './services/aiService.js';
 import './YouTubeExplorer.css';
 
 const SKELETON_COUNT = 6;
+const WATCH_LATER_KEY = 'prep-youtube-watch-later-v1';
+const RELATED_SEARCHES = [
+  'Telangana GK',
+  'Indian Polity for competitive exams',
+  'Arithmetic practice for SI exams',
+  'Reasoning shortcuts',
+  'English grammar for competitive exams'
+];
+
+function readWatchLater() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(WATCH_LATER_KEY) || '[]');
+    return {
+      videos: Array.isArray(saved) ? saved.filter((video) => video && /^[A-Za-z0-9_-]{11}$/.test(video.videoId)) : [],
+      error: ''
+    };
+  } catch {
+    return { videos: [], error: 'Watch Later could not be loaded from this browser.' };
+  }
+}
 
 function formatPublishedDate(value) {
   if (!value) return 'Publication date unavailable';
@@ -12,16 +32,33 @@ function formatPublishedDate(value) {
   return new Intl.DateTimeFormat(undefined, { year: 'numeric', month: 'short', day: 'numeric' }).format(date);
 }
 
+function formatVideoDuration(seconds) {
+  if (!Number.isInteger(seconds) || seconds < 0) return 'Duration unavailable';
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainingSeconds = seconds % 60;
+  if (hours > 0) return `${hours}:${String(minutes).padStart(2, '0')}:${String(remainingSeconds).padStart(2, '0')}`;
+  return `${minutes}:${String(remainingSeconds).padStart(2, '0')}`;
+}
+
 export default function YouTubeExplorer({ onNavigate }) {
   const [query, setQuery] = useState('');
   const [videos, setVideos] = useState([]);
+  const [watchLater, setWatchLater] = useState(readWatchLater);
   const [submittedQuery, setSubmittedQuery] = useState('');
+  const [submittedDuration, setSubmittedDuration] = useState('any');
+  const [submittedOrder, setSubmittedOrder] = useState('relevance');
   const [nextPageToken, setNextPageToken] = useState('');
+  const [duration, setDuration] = useState('any');
+  const [order, setOrder] = useState('relevance');
+  const [channelFilter, setChannelFilter] = useState('');
+  const [activeCollection, setActiveCollection] = useState('search');
   const [isLoading, setIsLoading] = useState(false);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [hasSearched, setHasSearched] = useState(false);
   const [error, setError] = useState('');
   const [selectedVideo, setSelectedVideo] = useState(null);
+  const [storageError, setStorageError] = useState(watchLater.error);
   const searchRequestRef = useRef(null);
   const moreRequestRef = useRef(null);
 
@@ -50,11 +87,12 @@ export default function YouTubeExplorer({ onNavigate }) {
     };
   }, [selectedVideo]);
 
-  async function submitSearch(event) {
-    event.preventDefault();
-    const requestedQuery = query.normalize('NFKC').trim();
+  async function runSearch(searchQuery = query) {
+    const requestedQuery = searchQuery.normalize('NFKC').trim();
     searchRequestRef.current?.abort();
     moreRequestRef.current?.abort();
+    setActiveCollection('search');
+    setChannelFilter('');
     setIsLoadingMore(false);
     setError('');
     setVideos([]);
@@ -69,11 +107,18 @@ export default function YouTubeExplorer({ onNavigate }) {
 
     const controller = new AbortController();
     searchRequestRef.current = controller;
+    setQuery(requestedQuery);
     setSubmittedQuery(requestedQuery);
+    setSubmittedDuration(duration);
+    setSubmittedOrder(order);
     setHasSearched(true);
     setIsLoading(true);
     try {
-      const result = await searchYouTubeVideos(requestedQuery, '', { signal: controller.signal });
+      const result = await searchYouTubeVideos(requestedQuery, '', {
+        signal: controller.signal,
+        duration,
+        order
+      });
       if (!controller.signal.aborted) {
         setVideos(result.videos);
         setNextPageToken(result.nextPageToken || '');
@@ -86,6 +131,25 @@ export default function YouTubeExplorer({ onNavigate }) {
     }
   }
 
+  function submitSearch(event) {
+    event.preventDefault();
+    void runSearch();
+  }
+
+  function toggleWatchLater(video) {
+    const isSaved = watchLater.videos.some((savedVideo) => savedVideo.videoId === video.videoId);
+    const nextVideos = isSaved
+      ? watchLater.videos.filter((savedVideo) => savedVideo.videoId !== video.videoId)
+      : [video, ...watchLater.videos];
+    try {
+      localStorage.setItem(WATCH_LATER_KEY, JSON.stringify(nextVideos));
+      setWatchLater({ videos: nextVideos, error: '' });
+      setStorageError('');
+    } catch {
+      setStorageError('Watch Later could not be saved. Check this browser’s available storage.');
+    }
+  }
+
   async function loadMore() {
     if (!nextPageToken || isLoadingMore) return;
     const requestedQuery = submittedQuery;
@@ -94,7 +158,11 @@ export default function YouTubeExplorer({ onNavigate }) {
     setIsLoadingMore(true);
     setError('');
     try {
-      const result = await searchYouTubeVideos(requestedQuery, nextPageToken, { signal: controller.signal });
+      const result = await searchYouTubeVideos(requestedQuery, nextPageToken, {
+        signal: controller.signal,
+        duration: submittedDuration,
+        order: submittedOrder
+      });
       if (!controller.signal.aborted && requestedQuery === query.normalize('NFKC').trim()) {
         setVideos((currentVideos) => {
           const knownIds = new Set(currentVideos.map((video) => video.videoId));
@@ -108,6 +176,14 @@ export default function YouTubeExplorer({ onNavigate }) {
       if (!controller.signal.aborted) setIsLoadingMore(false);
     }
   }
+
+  const sourceVideos = activeCollection === 'watch-later' ? watchLater.videos : videos;
+  const channels = [...new Map(sourceVideos
+    .filter((video) => video.channelId && video.channelName)
+    .map((video) => [video.channelId, { id: video.channelId, name: video.channelName }])).values()]
+    .sort((left, right) => left.name.localeCompare(right.name));
+  const visibleVideos = sourceVideos.filter((video) => !channelFilter || video.channelId === channelFilter);
+  const savedVideoIds = new Set(watchLater.videos.map((video) => video.videoId));
 
   return (
     <div className="yt-page">
@@ -126,11 +202,11 @@ export default function YouTubeExplorer({ onNavigate }) {
         <section className="yt-intro" aria-labelledby="yt-heading">
           <p className="yt-eyebrow">Learn something new</p>
           <h1 id="yt-heading">Explore YouTube</h1>
-          <p className="yt-subtitle">Search videos from across YouTube and watch them right here.</p>
+          <p className="yt-subtitle">Explore educational videos from YouTube and study at your own pace.</p>
           <form
             className="yt-search-form"
             role="search"
-            onSubmit={(event) => { void submitSearch(event); }}
+            onSubmit={submitSearch}
           >
             <label className="yt-visually-hidden" htmlFor="yt-search">Search YouTube videos</label>
             <Search size={20} aria-hidden="true" />
@@ -140,7 +216,7 @@ export default function YouTubeExplorer({ onNavigate }) {
               value={query}
               maxLength={100}
               autoComplete="off"
-              placeholder="Search programming, science, music..."
+              placeholder="Search Telangana GK, polity, reasoning..."
               onChange={(event) => updateQuery(event.target.value)}
             />
             {query && (
@@ -153,11 +229,59 @@ export default function YouTubeExplorer({ onNavigate }) {
               <span>Search</span>
             </button>
           </form>
-          <p className="yt-search-hint">Results are shown here. Select a video to play it without leaving this page.</p>
+          <div className="yt-search-options">
+            <label>
+              <span>Video length</span>
+              <select aria-label="Video length" value={duration} onChange={(event) => setDuration(event.target.value)}>
+                <option value="any">Any length</option>
+                <option value="short">Under 4 minutes</option>
+                <option value="medium">4–20 minutes</option>
+                <option value="long">Over 20 minutes</option>
+              </select>
+            </label>
+            <label>
+              <span>Sort by</span>
+              <select aria-label="Sort videos" value={order} onChange={(event) => setOrder(event.target.value)}>
+                <option value="relevance">Most relevant</option>
+                <option value="date">Newest</option>
+                <option value="viewCount">Most viewed</option>
+              </select>
+            </label>
+          </div>
+          <p className="yt-search-hint">Search results are limited to YouTube’s Education category. Filters apply when you search.</p>
+          <div className="yt-related-searches" aria-label="Suggested study searches">
+            <span>Popular study searches</span>
+            {RELATED_SEARCHES.map((search) => (
+              <button type="button" key={search} onClick={() => { void runSearch(search); }}>{search}</button>
+            ))}
+          </div>
         </section>
 
-        <section className="yt-results" aria-live="polite" aria-busy={isLoading || isLoadingMore}>
-          {isLoading && (
+        <section className="yt-results" aria-live="polite" aria-busy={activeCollection === 'search' && (isLoading || isLoadingMore)}>
+          <div className="yt-library-toolbar">
+            <div className="yt-collection-tabs" role="group" aria-label="Video collection">
+              <button type="button" aria-pressed={activeCollection === 'search'} onClick={() => { setActiveCollection('search'); setChannelFilter(''); }}>
+                Search results
+              </button>
+              <button type="button" aria-pressed={activeCollection === 'watch-later'} onClick={() => { setActiveCollection('watch-later'); setChannelFilter(''); }}>
+                <Bookmark size={15} aria-hidden="true" />
+                Watch Later <span>{watchLater.videos.length}</span>
+              </button>
+            </div>
+            {channels.length > 0 && (
+              <label className="yt-channel-filter">
+                <span>Channel</span>
+                <select aria-label="Filter by channel" value={channelFilter} onChange={(event) => setChannelFilter(event.target.value)}>
+                  <option value="">All channels</option>
+                  {channels.map((channel) => <option value={channel.id} key={channel.id}>{channel.name}</option>)}
+                </select>
+              </label>
+            )}
+          </div>
+
+          {storageError && <p className="yt-storage-error" role="alert">{storageError}</p>}
+
+          {activeCollection === 'search' && isLoading && (
             <div className="yt-video-grid" aria-label="Loading videos">
               {Array.from({ length: SKELETON_COUNT }, (_, index) => (
                 <div className="yt-skeleton-card" key={index}>
@@ -170,14 +294,14 @@ export default function YouTubeExplorer({ onNavigate }) {
             </div>
           )}
 
-          {!isLoading && error && (
+          {activeCollection === 'search' && !isLoading && error && (
             <div className="yt-state yt-error" role="alert">
               <h2>Search unavailable</h2>
               <p>{error}</p>
             </div>
           )}
 
-          {!isLoading && !error && !hasSearched && (
+          {activeCollection === 'search' && !isLoading && !error && !hasSearched && (
             <div className="yt-state">
               <div className="yt-state-icon"><Search size={24} aria-hidden="true" /></div>
               <h2>What would you like to watch?</h2>
@@ -185,7 +309,7 @@ export default function YouTubeExplorer({ onNavigate }) {
             </div>
           )}
 
-          {!isLoading && !error && hasSearched && videos.length === 0 && (
+          {activeCollection === 'search' && !isLoading && !error && hasSearched && videos.length === 0 && (
             <div className="yt-state">
               <div className="yt-state-icon"><Play size={24} aria-hidden="true" /></div>
               <h2>No videos found</h2>
@@ -193,10 +317,27 @@ export default function YouTubeExplorer({ onNavigate }) {
             </div>
           )}
 
-          {!isLoading && videos.length > 0 && (
+          {activeCollection === 'watch-later' && visibleVideos.length === 0 && (
+            <div className="yt-state">
+              <div className="yt-state-icon"><Bookmark size={24} aria-hidden="true" /></div>
+              <h2>Your Watch Later list is empty</h2>
+              <p>Save an educational video to find it here. This list is stored in this browser.</p>
+            </div>
+          )}
+
+          {sourceVideos.length > 0 && visibleVideos.length === 0 && (
+            <div className="yt-state">
+              <div className="yt-state-icon"><Search size={24} aria-hidden="true" /></div>
+              <h2>No videos from this channel</h2>
+              <p>Choose another channel to see more videos.</p>
+            </div>
+          )}
+
+          {visibleVideos.length > 0 && (
             <>
+              <p className="yt-results-count">{visibleVideos.length} video{visibleVideos.length === 1 ? '' : 's'}{channelFilter ? ' from this channel' : ''}</p>
               <div className="yt-video-grid">
-                {videos.map((video) => (
+                {visibleVideos.map((video) => (
                   <article className="yt-video-card" key={video.videoId}>
                     <button
                       type="button"
@@ -211,14 +352,24 @@ export default function YouTubeExplorer({ onNavigate }) {
                       <span className="yt-video-copy">
                         <span className="yt-video-title">{video.title}</span>
                         <span className="yt-channel-name">{video.channelName}</span>
+                        <span className="yt-video-duration"><Clock3 size={13} aria-hidden="true" />{formatVideoDuration(video.durationSeconds)}</span>
                         <span className="yt-video-description">{video.description || 'No description available.'}</span>
                         <span className="yt-published-date">{formatPublishedDate(video.publishedAt)}</span>
                       </span>
                     </button>
+                    <button
+                      type="button"
+                      className="yt-watch-later"
+                      aria-pressed={savedVideoIds.has(video.videoId)}
+                      onClick={() => toggleWatchLater(video)}
+                    >
+                      {savedVideoIds.has(video.videoId) ? <Check size={15} aria-hidden="true" /> : <Bookmark size={15} aria-hidden="true" />}
+                      {savedVideoIds.has(video.videoId) ? 'Saved for later' : 'Watch later'}
+                    </button>
                   </article>
                 ))}
               </div>
-              {nextPageToken && (
+              {activeCollection === 'search' && nextPageToken && (
                 <div className="yt-load-more-wrap">
                   <button type="button" className="yt-load-more" onClick={() => { void loadMore(); }} disabled={isLoadingMore}>
                     {isLoadingMore ? <LoaderCircle size={17} className="yt-spinner" aria-hidden="true" /> : null}
