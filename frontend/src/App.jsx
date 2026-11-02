@@ -124,6 +124,10 @@ const getExamCountdown = (targetTime, now) => {
 
 const getLocalDateKey = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 const normalizeAppPath = (pathname) => pathname.replace(/\/+$/, '') || '/';
+const isYoutubeAppLocation = (pathname, search) => (
+  normalizeAppPath(pathname) === '/youtube'
+  || new URLSearchParams(search).has('youtube')
+);
 
 function initializeExamAudio(contextRef) {
   if (typeof window === 'undefined') return;
@@ -227,17 +231,31 @@ function getSafeAiMessage(error, fallback) {
 }
 
 export default function App() {
-  const [isYoutubeRoute, setIsYoutubeRoute] = useState(() => normalizeAppPath(window.location.pathname) === '/youtube');
+  const [isYoutubeRoute, setIsYoutubeRoute] = useState(() => (
+    isYoutubeAppLocation(window.location.pathname, window.location.search)
+  ));
   const navigateInternal = (path) => {
-    const normalizedPath = normalizeAppPath(path);
-    if (normalizeAppPath(window.location.pathname) !== normalizedPath) {
-      window.history.pushState({}, '', normalizedPath);
+    const destination = new URL(path, window.location.origin);
+    const normalizedPath = normalizeAppPath(destination.pathname);
+    if (normalizedPath === '/youtube') {
+      const youtubeQuery = destination.searchParams.get('q') || '';
+      destination.pathname = '/';
+      destination.search = '';
+      destination.searchParams.set('youtube', youtubeQuery);
     }
-    setIsYoutubeRoute(normalizedPath === '/youtube');
+    const nextUrl = `${destination.pathname}${destination.search}${destination.hash}`;
+    if (
+      `${window.location.pathname}${window.location.search}${window.location.hash}` !== nextUrl
+    ) {
+      window.history.pushState({}, '', nextUrl);
+    }
+    setIsYoutubeRoute(isYoutubeAppLocation(destination.pathname, destination.search));
   };
 
   useEffect(() => {
-    const syncRoute = () => setIsYoutubeRoute(normalizeAppPath(window.location.pathname) === '/youtube');
+    const syncRoute = () => setIsYoutubeRoute(
+      isYoutubeAppLocation(window.location.pathname, window.location.search)
+    );
     window.addEventListener('popstate', syncRoute);
     return () => window.removeEventListener('popstate', syncRoute);
   }, []);
@@ -3154,7 +3172,7 @@ export default function App() {
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
                         <a
-                          href={`/youtube?q=${encodeURIComponent(selectedTopic)}`}
+                          href={`/?youtube=${encodeURIComponent(selectedTopic)}`}
                           target="_blank"
                           rel="noopener noreferrer"
                           aria-label={`Search YouTube for ${selectedTopic}`}
@@ -3637,7 +3655,7 @@ export default function App() {
                 </div>
                 <div className="print:hidden flex flex-wrap items-center justify-center gap-2">
                   <a
-                    href={`/youtube?q=${encodeURIComponent(activeTestQuestions[currentQuestionIdx]?.topic || selectedTopic)}`}
+                    href={`/?youtube=${encodeURIComponent(activeTestQuestions[currentQuestionIdx]?.topic || selectedTopic)}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     aria-label={`Search YouTube for ${activeTestQuestions[currentQuestionIdx]?.topic || selectedTopic}`}

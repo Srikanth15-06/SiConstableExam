@@ -214,7 +214,7 @@ test('@desktop signup, login, planner, quiz, isolation, Drive status, and logout
         await page.getByRole('button', { name: 'Arithmetic', exact: true }).click();
         await page.getByText('Percentages', { exact: true }).first().click();
         await expect(page.getByRole('heading', { name: 'Select Topic & Practice Level' })).toBeVisible();
-        await expect(page.getByRole('link', { name: 'Search YouTube for Percentages' })).toHaveAttribute('href', '/youtube?q=Percentages');
+        await expect(page.getByRole('link', { name: 'Search YouTube for Percentages' })).toHaveAttribute('href', '/?youtube=Percentages');
         const createAttemptPromise = page.waitForResponse((response) => new URL(response.url()).pathname === '/api/tests' && response.request().method() === 'POST', { timeout: 150_000 });
         await page.getByRole('button', { name: 'Launch AI Test', exact: true }).click();
         const createAttemptResponse = await createAttemptPromise;
@@ -231,7 +231,7 @@ test('@desktop signup, login, planner, quiz, isolation, Drive status, and logout
         const currentQuestionTopic = attempt.questions[0].topic || attempt.topic || 'Percentages';
         await expect(page.getByRole('link', { name: `Search YouTube for ${currentQuestionTopic}` })).toHaveAttribute(
             'href',
-            `/youtube?q=${encodeURIComponent(currentQuestionTopic)}`
+            `/?youtube=${encodeURIComponent(currentQuestionTopic)}`
         );
 
         const firstOption = attempt.questions[0].options[0];

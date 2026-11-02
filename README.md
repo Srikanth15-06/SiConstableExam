@@ -23,7 +23,7 @@ This repository has two separately installed parts:
 - Track topic progress and use the Smart Study Planner for revision and manual tasks.
 - Generate an AI-ranked full-syllabus schedule personalized to exam role, remaining days, daily study time, topic completion, accuracy, practice activity, and exam weightage. The schedule assigns every syllabus topic, adjusts session lengths when time is tight, and refreshes as progress changes.
 - Connect Google Drive to browse folders with file/page thumbnails, preview or download notes, provision folders, upload supported files (up to 20 MB), and rename files or folders as a site administrator.
-- Open topic-specific YouTube study searches from syllabus topics and active tests. Search embeddable videos in the Education category, prefer Telugu, Hindi, English, or any language, filter by length and channel, sort by relevance/date/views, play videos in a dockable floating player with previous/next navigation, and keep a browser-local Watch Later list at `/youtube`.
+- Open topic-specific YouTube study searches from syllabus topics and active tests. Search embeddable videos in the Education category, prefer Telugu, Hindi, English, or any language, filter by length and channel, sort by relevance/date/views, play videos in a dockable floating player with previous/next navigation, and keep a browser-local Watch Later list. Topic links use `/?youtube=<topic>` so they work on static hosts without a `/youtube` rewrite.
 - Secure candidate accounts with Supabase-backed sessions, progress, test history, planner data, and saved questions.
 
 ## Architecture and requests
@@ -60,7 +60,7 @@ Backend web service:
 
 The static service needs a Render **Rewrite** rule from `/api/*` to `https://siconstableexam.onrender.com/api/*`. This keeps API and OAuth callback requests on the frontend origin. Leave `VITE_API_BASE_URL` unset; `VITE_API_PROXY_TARGET=http://localhost:8787` is for local Vite development only. Render supplies `PORT`; do not hard-code a production port.
 
-Also add a static-site **Rewrite** rule from `/youtube` to `/index.html` so direct visits and refreshes on the YouTube Explorer route load the React app.
+Optionally add a static-site **Rewrite** rule from `/youtube` to `/index.html` if you want direct visits to `/youtube` (and refreshes on that legacy route) to load the React app. Topic links use the homepage query route and do not require this rule.
 
 Set these variables on the Render backend web service only. Keep all key and secret values out of the static frontend service, `VITE_*` variables, and committed files:
 

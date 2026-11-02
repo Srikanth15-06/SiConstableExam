@@ -42,7 +42,10 @@ function formatVideoDuration(seconds) {
 }
 
 export default function YouTubeExplorer({ onNavigate }) {
-  const [query, setQuery] = useState(() => new URLSearchParams(window.location.search).get('q')?.slice(0, 100) || '');
+  const [query, setQuery] = useState(() => {
+    const params = new URLSearchParams(window.location.search);
+    return (params.get('q') || params.get('youtube') || '').slice(0, 100);
+  });
   const [videos, setVideos] = useState([]);
   const [watchLater, setWatchLater] = useState(readWatchLater);
   const [submittedQuery, setSubmittedQuery] = useState('');
