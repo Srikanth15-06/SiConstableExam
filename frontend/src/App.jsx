@@ -3153,6 +3153,16 @@ export default function App() {
                         <p className="mt-2 text-sm leading-relaxed text-slate-400">Master this topic from fundamentals to exam level with AI-powered explanations.</p>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
+                        <a
+                          href={`/youtube?q=${encodeURIComponent(selectedTopic)}`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          aria-label={`Search YouTube for ${selectedTopic}`}
+                          className="inline-flex items-center gap-2 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs font-semibold text-red-200 hover:bg-red-500/20"
+                        >
+                          <Play className="h-4 w-4" />
+                          Study on YouTube
+                        </a>
                         <button
                           type="button"
                           onClick={() => void handleViewSelectedDriveNotes()}
@@ -3625,15 +3635,27 @@ export default function App() {
                     </span>
                   </h3>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => window.print()}
-                  title="Print or save this question paper as a PDF"
-                  className="print:hidden inline-flex items-center gap-2 rounded-lg border border-blue-400/30 bg-blue-500/10 px-3 py-2 text-xs font-bold text-blue-100 transition hover:bg-blue-500/20"
-                >
-                  <Download className="h-4 w-4" />
-                  Download PDF
-                </button>
+                <div className="print:hidden flex flex-wrap items-center justify-center gap-2">
+                  <a
+                    href={`/youtube?q=${encodeURIComponent(activeTestQuestions[currentQuestionIdx]?.topic || selectedTopic)}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label={`Search YouTube for ${activeTestQuestions[currentQuestionIdx]?.topic || selectedTopic}`}
+                    className="inline-flex items-center gap-2 rounded-lg border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs font-bold text-red-100 transition hover:bg-red-500/20"
+                  >
+                    <Play className="h-4 w-4" />
+                    Study on YouTube
+                  </a>
+                  <button
+                    type="button"
+                    onClick={() => window.print()}
+                    title="Print or save this question paper as a PDF"
+                    className="inline-flex items-center gap-2 rounded-lg border border-blue-400/30 bg-blue-500/10 px-3 py-2 text-xs font-bold text-blue-100 transition hover:bg-blue-500/20"
+                  >
+                    <Download className="h-4 w-4" />
+                    Download PDF
+                  </button>
+                </div>
               </div>
               {questionGenerationNotice && (
                 <p className="text-xs text-teal-300 bg-teal-500/10 border border-teal-500/20 rounded-lg px-3 py-2">

@@ -81,15 +81,18 @@ test('@desktop @mobile @tablet YouTube study explorer filters, watch later, play
     await page.getByRole('button', { name: 'Sign up' }).click();
     await expect(page.getByRole('heading', { name: 'Create your account' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'Browse YouTube videos' })).toHaveCount(0);
+    const search = page.getByRole('searchbox', { name: 'Search YouTube videos' });
     await page.goto('/youtube');
-    await expect(page).toHaveURL(/\/youtube$/);
+    await expect(page).toHaveURL(/\/youtube(?:\?.*)?$/);
     await page.reload();
     await expect(page.getByRole('heading', { name: 'Explore YouTube' })).toBeVisible();
     await expect(page.getByText('What would you like to watch?')).toBeVisible();
     await expect(page.getByText('Education category', { exact: false })).toBeVisible();
     await expect(page.getByLabel('Video language')).toHaveValue('all');
+    await page.goto('/youtube?q=Percentages');
+    await expect(search).toHaveValue('Percentages');
+    expect(requests).toHaveLength(0);
 
-    const search = page.getByRole('searchbox', { name: 'Search YouTube videos' });
     for (const phrase of ['React tutorials', 'Python tutorials', 'arbitrary keywords']) {
         const requestCountBeforeTyping = requests.length;
         await search.fill(phrase);
@@ -123,7 +126,7 @@ test('@desktop @mobile @tablet YouTube study explorer filters, watch later, play
     await expect(iframe).toHaveAttribute('src', /youtube-nocookie\.com\/embed\/abcdefghijk/);
     await expect(iframe).toHaveAttribute('allowfullscreen', '');
     await expect(iframe).toHaveAttribute('allow', /autoplay.*picture-in-picture/);
-    await expect(page).toHaveURL(/\/youtube$/);
+    await expect(page).toHaveURL(/\/youtube(?:\?.*)?$/);
     await expect(page.locator('a[href*="youtube.com"]')).toHaveCount(0);
     expect(context.pages()).toHaveLength(1);
     await nextVideoButton.click();
@@ -212,7 +215,7 @@ test('@desktop @mobile @tablet YouTube study explorer filters, watch later, play
     expect(requests.some((request) => request.query === 'quota test')).toBe(false);
     await page.getByRole('button', { name: 'Search videos' }).click();
     await expect(page.getByRole('alert')).toContainText('API quota');
-    await expect(page).toHaveURL(/\/youtube$/);
+    await expect(page).toHaveURL(/\/youtube(?:\?.*)?$/);
     expect(context.pages()).toHaveLength(1);
 
     const hasHorizontalOverflow = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth);
