@@ -43,3 +43,16 @@ test('provider config loads configured keys and models', () => {
     assert.equal(openrouter.activeKeyNumber, 1);
     assert.equal(openrouter.activeModel, 'openrouter-model-1');
 });
+
+test('provider config supports direct single key and model overrides without removing numbered fallbacks', () => {
+    process.env.GEMINI_API_KEY = 'gemini-direct-key';
+    process.env.GEMINI_MODEL = 'gemini-direct-model';
+
+    const gemini = getProviderConfig('gemini');
+
+    assert.deepEqual(gemini.apiKeys, ['gemini-direct-key', 'gemini-key-1', 'gemini-key-2', 'gemini-key-3']);
+    assert.deepEqual(gemini.models, ['gemini-direct-model', 'gemini-model-1', 'gemini-model-2']);
+
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.GEMINI_MODEL;
+});

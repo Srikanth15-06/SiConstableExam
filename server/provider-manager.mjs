@@ -3,17 +3,15 @@ import path from 'node:path';
 import { validateGoogleDriveConfig } from './google-drive-service.mjs';
 
 const envPath = path.resolve(process.cwd(), '.env');
+const MAX_PROVIDER_SLOTS = 20;
 
 function hasActiveProviderConfig() {
     const providerPrefixes = ['GEMINI', 'GROQ', 'OPENROUTER'];
     return providerPrefixes.some((prefix) => {
         const directKey = process.env[`${prefix}_API_KEY`];
         if (typeof directKey === 'string' && directKey.trim()) return true;
-        for (let index = 1; index <= 20; index += 1) {
+        for (let index = 1; index <= MAX_PROVIDER_SLOTS; index += 1) {
             if (typeof process.env[`${prefix}_API_KEY_${index}`] === 'string' && process.env[`${prefix}_API_KEY_${index}`].trim()) {
-                return true;
-            }
-            if (typeof process.env[`${prefix}_MODEL_${index}`] === 'string' && process.env[`${prefix}_MODEL_${index}`].trim()) {
                 return true;
             }
         }
@@ -27,10 +25,12 @@ function loadDotEnv() {
     const raw = fs.readFileSync(envPath, 'utf8');
     for (const line of raw.split(/\r?\n/)) {
         const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith('#') || !trimmed.includes('=')) continue;
-        const idx = trimmed.indexOf('=');
-        const key = trimmed.slice(0, idx).trim();
-        const value = trimmed.slice(idx + 1).trim();
+        if (!trimmed || trimmed.startsWith('#')) continue;
+        const normalized = trimmed.startsWith('export ') ? trimmed.slice(6).trim() : trimmed;
+        if (!normalized || !normalized.includes('=')) continue;
+        const idx = normalized.indexOf('=');
+        const key = normalized.slice(0, idx).trim();
+        const value = normalized.slice(idx + 1).trim();
         if (!process.env[key]) {
             process.env[key] = value.replace(/^['"]|['"]$/g, '');
         }
@@ -40,30 +40,49 @@ function loadDotEnv() {
 loadDotEnv();
 
 export function getProviderConfig(providerName) {
-    const providerKey = providerName.toUpperCase();
+    const providerKey = String(providerName || '').toUpperCase();
     const apiKeys = [];
     const apiKeyEntries = [];
-    let index = 1;
+    const appendApiKey = (key, index) => {
+        const trimmedKey = key.trim();
+        if (!trimmedKey) return;
+        apiKeys.push(trimmedKey);
+        apiKeyEntries.push({ index, key: trimmedKey });
+    };
 
-    while (index <= 20) {
+    const directApiKey = process.env[`${providerKey}_API_KEY`];
+    if (typeof directApiKey === 'string') {
+        appendApiKey(directApiKey, 0);
+    }
+
+    let index = 1;
+    while (index <= MAX_PROVIDER_SLOTS) {
         const key = process.env[`${providerKey}_API_KEY_${index}`];
-        if (key && key.trim()) {
-            const trimmedKey = key.trim();
-            apiKeys.push(trimmedKey);
-            apiKeyEntries.push({ index, key: trimmedKey });
+        if (typeof key === 'string') {
+            appendApiKey(key, index);
         }
         index += 1;
     }
 
     const modelEntries = [];
     const models = [];
+    const appendModel = (model, index) => {
+        const trimmed = model.trim();
+        if (!trimmed) return;
+        models.push(trimmed);
+        modelEntries.push({ index, model: trimmed });
+    };
+
+    const directModel = process.env[`${providerKey}_MODEL`];
+    if (typeof directModel === 'string') {
+        appendModel(directModel, 0);
+    }
+
     let modelIndex = 1;
-    while (modelIndex <= 20) {
+    while (modelIndex <= MAX_PROVIDER_SLOTS) {
         const model = process.env[`${providerKey}_MODEL_${modelIndex}`];
-        if (model && model.trim()) {
-            const trimmedModel = model.trim();
-            modelEntries.push({ index: modelIndex, model: trimmedModel });
-            models.push(trimmedModel);
+        if (typeof model === 'string') {
+            appendModel(model, modelIndex);
         }
         modelIndex += 1;
     }
@@ -83,7 +102,7 @@ export function getProviderConfig(providerName) {
     const activeModelEntry = modelEntries.find((entry) => entry.index === activeIndex) || modelEntries[0] || null;
 
     return {
-        providerName,
+        providerName: providerKey,
         apiKeys,
         apiKeyEntries,
         models,
